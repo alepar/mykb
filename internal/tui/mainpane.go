@@ -28,19 +28,9 @@ func renderHeader(item ResultItem, width int) string {
 	return sb.String()
 }
 
-// renderMarkdown renders markdown text using glamour.
-func renderMarkdown(text string, width int) string {
-	if width < 10 {
-		width = 10
-	}
-	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(width),
-	)
-	if err != nil {
-		return text
-	}
-	out, err := r.Render(text)
+// renderMarkdown renders markdown text using the provided glamour renderer.
+func renderMarkdown(text string, renderer *glamour.TermRenderer) string {
+	out, err := renderer.Render(text)
 	if err != nil {
 		return text
 	}
@@ -67,6 +57,9 @@ func findMatches(content, search string) []int {
 // renderMainPane renders the main content pane including the viewport and optional search bar.
 func renderMainPane(m *Model) string {
 	mainWidth := m.width - SidebarWidth - 2
+	if mainWidth < 20 {
+		mainWidth = 20
+	}
 
 	var sb strings.Builder
 	sb.WriteString(m.viewport.View())

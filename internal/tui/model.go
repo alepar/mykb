@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -63,12 +64,13 @@ type Model struct {
 	sidebarSearch bool
 
 	// Main pane state
-	viewport      viewport.Model
-	renderedTexts []string
-	mainSearch    textinput.Model
-	mainSearching bool
-	searchMatches []int
-	searchCursor  int
+	viewport       viewport.Model
+	renderedTexts  []string
+	currentContent string
+	mainSearch     textinput.Model
+	mainSearching  bool
+	searchMatches  []int
+	searchCursor   int
 }
 
 // New creates a new Model with the given result items.
@@ -230,8 +232,7 @@ func (m Model) handleMainSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		m.mainSearching = false
 		m.mainSearch.Blur()
-		content := m.viewport.View()
-		m.searchMatches = findMatches(content, m.mainSearch.Value())
+		m.searchMatches = findMatches(m.currentContent, m.mainSearch.Value())
 		m.searchCursor = 0
 		if len(m.searchMatches) > 0 {
 			m.viewport.SetYOffset(m.searchMatches[0])
@@ -263,7 +264,9 @@ func (m *Model) syncMainPane() {
 	if idx < len(m.renderedTexts) {
 		body = m.renderedTexts[idx]
 	}
-	m.viewport.SetContent(header + "\n" + body)
+	content := header + "\n" + body
+	m.currentContent = content
+	m.viewport.SetContent(content)
 
 	// Reset search state
 	m.searchMatches = nil
@@ -278,8 +281,15 @@ func (m *Model) updateViewport() {
 	}
 
 	m.renderedTexts = make([]string, len(m.items))
-	for i, item := range m.items {
-		m.renderedTexts[i] = renderMarkdown(item.Text, mainWidth)
+	renderWidth := mainWidth
+	if renderWidth < 10 {
+		renderWidth = 10
+	}
+	renderer, err := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(renderWidth))
+	if err == nil {
+		for i, item := range m.items {
+			m.renderedTexts[i] = renderMarkdown(item.Text, renderer)
+		}
 	}
 
 	vpHeight := m.height - 1

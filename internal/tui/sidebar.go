@@ -34,8 +34,12 @@ func renderSidebarEntry(item ResultItem, width int, active bool) string {
 	line1 := fmt.Sprintf("%s %s %s", rank, score, domain)
 
 	titleText := item.Title
-	if lipgloss.Width(titleText) > width-2 {
-		titleText = titleText[:width-5] + "\u2026"
+	if width >= 8 && lipgloss.Width(titleText) > width-2 {
+		runes := []rune(titleText)
+		for len(runes) > 0 && lipgloss.Width(string(runes)) > width-3 {
+			runes = runes[:len(runes)-1]
+		}
+		titleText = string(runes) + "\u2026"
 	}
 	line2 := "  " + titleStyle.Render(titleText)
 

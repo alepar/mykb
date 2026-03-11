@@ -2,9 +2,9 @@ package tui
 
 import "github.com/charmbracelet/lipgloss"
 
-var (
-	SidebarWidth = 30
+const SidebarWidth = 30
 
+var (
 	sidebarStyle       = lipgloss.NewStyle().Width(SidebarWidth).BorderRight(true).BorderStyle(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("8"))
 	sidebarActiveStyle = lipgloss.NewStyle().Background(lipgloss.Color("236")).Bold(true)
 	sidebarItemStyle   = lipgloss.NewStyle()
