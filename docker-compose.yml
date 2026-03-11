@@ -1,0 +1,42 @@
+services:
+  mykb:
+    build: .
+    ports:
+      - "9090:9090"
+    depends_on:
+      - postgres
+      - qdrant
+      - meilisearch
+      - crawl4ai
+    env_file: .env
+    environment:
+      POSTGRES_DSN: postgres://mykb:mykb@postgres:5432/mykb?sslmode=disable
+      QDRANT_GRPC_HOST: qdrant:6334
+      MEILISEARCH_HOST: http://meilisearch:7700
+      CRAWL4AI_URL: http://crawl4ai:11235
+    volumes:
+      - ./data/documents:/data/documents:Z
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: mykb
+      POSTGRES_PASSWORD: mykb
+      POSTGRES_DB: mykb
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data:Z
+
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    volumes:
+      - ./data/qdrant:/qdrant/storage:Z
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.37.0
+    environment:
+      MEILI_MASTER_KEY: ${MEILISEARCH_KEY}
+    volumes:
+      - ./data/meili:/meili_data:Z
+
+  crawl4ai:
+    image: unclecode/crawl4ai:latest
