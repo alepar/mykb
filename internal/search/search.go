@@ -56,6 +56,7 @@ type SearchResult struct {
 	DocumentID string
 	ChunkIndex int
 	Score      float64
+	Text       string
 }
 
 // chunkMeta holds the metadata we need to resolve a chunk ID back to its
@@ -192,6 +193,7 @@ func (h *HybridSearcher) Search(ctx context.Context, params SearchParams) ([]Sea
 			DocumentID: meta.DocumentID,
 			ChunkIndex: meta.ChunkIndex,
 			Score:      rr.Score,
+			Text:       chunkTexts[rr.Index],
 		}
 	}
 

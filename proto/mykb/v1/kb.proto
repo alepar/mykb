@@ -39,6 +39,7 @@ message QueryResult {
   string document_id = 2;
   int32 chunk_index = 3;
   float score = 4;
+  string text = 5;
 }
 
 message Document {

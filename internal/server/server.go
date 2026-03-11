@@ -103,6 +103,7 @@ func (s *Server) Query(ctx context.Context, req *mykbv1.QueryRequest) (*mykbv1.Q
 			DocumentId: r.DocumentID,
 			ChunkIndex: int32(r.ChunkIndex),
 			Score:      float32(r.Score),
+			Text:       r.Text,
 		}
 	}
 

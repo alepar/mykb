@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.1
 // - protoc             v3.21.12
-// source: mykb/v1/kb.proto
+// source: proto/mykb/v1/kb.proto
 
 package mykbv1
 
@@ -273,5 +273,5 @@ var KBService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "mykb/v1/kb.proto",
+	Metadata: "proto/mykb/v1/kb.proto",
 }
