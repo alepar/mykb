@@ -1,10 +1,169 @@
 package pipeline
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 )
+
+var redditThreadPattern = regexp.MustCompile(`^https?://(?:www\.|old\.)?reddit\.com/r/\w+/comments/\w+`)
+
+func isRedditThread(url string) bool {
+	return redditThreadPattern.MatchString(url)
+}
+
+// redditPostData holds the fields we extract from a Reddit post (t3).
+type redditPostData struct {
+	Title    string `json:"title"`
+	Selftext string `json:"selftext"`
+	Author   string `json:"author"`
+	Score    int    `json:"score"`
+}
+
+// redditListing represents the top-level Reddit JSON API listing structure.
+type redditListing struct {
+	Data struct {
+		Children []redditListingChild `json:"children"`
+	} `json:"data"`
+}
+
+type redditListingChild struct {
+	Kind string          `json:"kind"`
+	Data json.RawMessage `json:"data"`
+}
+
+// redditCommentData is the raw JSON shape for a comment (t1).
+type redditCommentData struct {
+	Author  string          `json:"author"`
+	Body    string          `json:"body"`
+	Score   int             `json:"score"`
+	Replies json.RawMessage `json:"replies"`
+}
+
+// fetchRedditThread fetches a Reddit thread via the JSON API and returns
+// the post data and the comment tree.
+func fetchRedditThread(ctx context.Context, client *http.Client, threadURL string) (redditPostData, []redditComment, error) {
+	// Build JSON API URL: strip trailing slash, append .json
+	u := strings.TrimRight(threadURL, "/") + ".json"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return redditPostData{}, nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("User-Agent", "mykb/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return redditPostData{}, nil, fmt.Errorf("fetch reddit thread: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return redditPostData{}, nil, fmt.Errorf("reddit returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var listings [2]redditListing
+	if err := json.NewDecoder(resp.Body).Decode(&listings); err != nil {
+		return redditPostData{}, nil, fmt.Errorf("decode reddit JSON: %w", err)
+	}
+
+	// Extract post from listings[0].data.children[0].data
+	if len(listings[0].Data.Children) == 0 {
+		return redditPostData{}, nil, fmt.Errorf("no post found in reddit response")
+	}
+	var post redditPostData
+	if err := json.Unmarshal(listings[0].Data.Children[0].Data, &post); err != nil {
+		return redditPostData{}, nil, fmt.Errorf("decode post data: %w", err)
+	}
+
+	// Parse comment tree from listings[1].data.children
+	comments := parseCommentChildren(listings[1].Data.Children)
+
+	return post, comments, nil
+}
+
+// parseCommentChildren converts redditListingChild entries into redditComment tree nodes.
+func parseCommentChildren(children []redditListingChild) []redditComment {
+	var comments []redditComment
+	for _, child := range children {
+		if child.Kind != "t1" {
+			continue // skip "more" stubs and non-comment entries
+		}
+		var cd redditCommentData
+		if err := json.Unmarshal(child.Data, &cd); err != nil {
+			continue
+		}
+		c := redditComment{
+			Author:  cd.Author,
+			Body:    cd.Body,
+			Score:   cd.Score,
+			Replies: parseReplies(cd.Replies),
+		}
+		comments = append(comments, c)
+	}
+	return comments
+}
+
+// parseReplies handles the polymorphic replies field: it's either "" (empty string)
+// or a listing object containing nested comments.
+func parseReplies(raw json.RawMessage) []redditComment {
+	if len(raw) == 0 {
+		return nil
+	}
+	// Check if it's a string (empty replies are encoded as "")
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return nil
+	}
+	// Otherwise it's a listing object
+	var listing redditListing
+	if err := json.Unmarshal(raw, &listing); err != nil {
+		return nil
+	}
+	return parseCommentChildren(listing.Data.Children)
+}
+
+const redditCommentTokenBudget = 20000
+
+// crawlReddit fetches a Reddit thread via the JSON API and returns a CrawlResult
+// with the post and top comments rendered as markdown.
+func (c *Crawler) crawlReddit(ctx context.Context, threadURL string) (CrawlResult, error) {
+	post, comments, err := fetchRedditThread(ctx, c.httpClient, threadURL)
+	if err != nil {
+		return CrawlResult{}, err
+	}
+
+	// Select top comments within token budget.
+	selected := selectComments(comments, redditCommentTokenBudget)
+
+	// Sort top-level selected comments by score descending.
+	sort.Slice(selected, func(i, j int) bool {
+		return selected[i].Score > selected[j].Score
+	})
+
+	// Assemble markdown.
+	var sb strings.Builder
+	sb.WriteString("# ")
+	sb.WriteString(post.Title)
+	sb.WriteString("\n\n")
+	if post.Selftext != "" {
+		sb.WriteString(post.Selftext)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("## Comments\n\n")
+	sb.WriteString(renderCommentsMarkdown(selected))
+
+	return CrawlResult{
+		Markdown: sb.String(),
+		Title:    post.Title,
+	}, nil
+}
 
 type redditComment struct {
 	Author  string
@@ -34,10 +193,9 @@ func flattenComments(comments []redditComment) []*redditComment {
 // including full ancestor chains. It returns a new tree containing only
 // selected and ancestor comments.
 func selectComments(tree []redditComment, tokenBudget int) []redditComment {
-	// Deep copy the tree so we can safely set parent pointers and mutate.
+	// Deep copy so we can set parent pointers without mutating the caller's data.
+	// filterTree below uses pointer identity from this same copy to check inclusion.
 	copied := deepCopyComments(tree)
-
-	// Flatten to get parent pointers and a flat list.
 	flat := flattenComments(copied)
 
 	// Sort by score descending.

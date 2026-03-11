@@ -95,6 +95,10 @@ type crawlMetadata struct {
 // the page content as markdown. It uses PruningContentFilter to produce
 // fit_markdown (filtered content without navigation/boilerplate).
 func (c *Crawler) Crawl(ctx context.Context, url string) (CrawlResult, error) {
+	if isRedditThread(url) {
+		return c.crawlReddit(ctx, url)
+	}
+
 	body, err := json.Marshal(crawlRequest{
 		URLs:     []string{url},
 		Priority: 10,
