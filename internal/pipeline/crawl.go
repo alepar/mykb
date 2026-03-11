@@ -182,8 +182,8 @@ func (c *Crawler) getTask(ctx context.Context, taskID string) (*taskResponse, er
 // or an empty string if none is found.
 func extractTitle(markdown string) string {
 	for _, line := range strings.Split(markdown, "\n") {
-		if strings.HasPrefix(line, "# ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "#"))
+		if strings.HasPrefix(line, "# ") && !strings.HasPrefix(line, "## ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "# "))
 		}
 	}
 	return ""

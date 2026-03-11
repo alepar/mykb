@@ -133,7 +133,7 @@ func (m *MeilisearchStore) Search(ctx context.Context, query string, limit int64
 func (m *MeilisearchStore) DeleteByDocumentID(ctx context.Context, documentID string) error {
 	index := m.client.Index(m.indexName)
 	task, err := index.DeleteDocumentsByFilter(
-		fmt.Sprintf("document_id = %q", documentID), nil,
+		fmt.Sprintf("document_id = '%s'", documentID), nil,
 	)
 	if err != nil {
 		return fmt.Errorf("delete documents for document_id %q: %w", documentID, err)

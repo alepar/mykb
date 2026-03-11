@@ -106,7 +106,11 @@ func (w *Worker) Start(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case item := <-w.notify:
-			if err := w.ProcessDocument(ctx, item.documentID, item.progress); err != nil {
+			err := w.ProcessDocument(ctx, item.documentID, item.progress)
+			if item.progress != nil {
+				close(item.progress)
+			}
+			if err != nil {
 				log.Printf("worker: error processing document %s: %v", item.documentID, err)
 			}
 		}
@@ -206,6 +210,11 @@ func (w *Worker) doCrawl(ctx context.Context, doc *storage.Document, progress ch
 func (w *Worker) doChunk(ctx context.Context, doc *storage.Document, progress chan<- ProgressUpdate) error {
 	if err := w.pg.UpdateDocumentStatus(ctx, doc.ID, "CHUNKING"); err != nil {
 		return fmt.Errorf("set status CHUNKING: %w", err)
+	}
+
+	// Delete existing chunks on resume to avoid unique constraint violations.
+	if err := w.pg.DeleteChunksByDocument(ctx, doc.ID); err != nil {
+		return fmt.Errorf("delete existing chunks: %w", err)
 	}
 
 	content, err := w.fs.ReadDocument(doc.ID)
@@ -490,8 +499,14 @@ func (w *Worker) handleError(ctx context.Context, docID string, err error) error
 }
 
 // sendProgress sends an update on the channel if it is non-nil.
+// Uses a non-blocking send to avoid stalling the worker if the consumer is slow.
 func sendProgress(ch chan<- ProgressUpdate, update ProgressUpdate) {
-	if ch != nil {
-		ch <- update
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- update:
+	default:
+		log.Printf("worker: progress channel full, dropping update for %s", update.DocumentID)
 	}
 }
