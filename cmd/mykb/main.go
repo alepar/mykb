@@ -9,21 +9,15 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
 	mykbv1 "mykb/gen/mykb/v1"
 	"mykb/internal/cliconfig"
-)
-
-var (
-	redStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	whiteStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-	blueStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
-	grayStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	"mykb/internal/tui"
 )
 
 func main() {
@@ -151,7 +145,7 @@ func runQuery(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: mykb query <query> [flags]")
 		os.Exit(1)
 	}
-	query := fs.Arg(0)
+	query := strings.Join(fs.Args(), " ")
 
 	cfg := cliconfig.Load("")
 	if *host != "" {
@@ -214,73 +208,93 @@ func runQuery(args []string) {
 		docMap[doc.Id] = doc
 	}
 
-	termWidth := getTerminalWidth()
-
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(termWidth),
-	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error creating renderer: %v\n", err)
-		os.Exit(1)
-	}
-
 	// In merge mode, deduplicate by document (keep highest-scoring segment only).
 	results := resp.Results
 	if !*noMerge {
 		results = deduplicateByDocument(results)
 	}
 
-	for i, result := range results {
-		doc := docMap[result.DocumentId]
-
-		title := result.DocumentId
-		url := ""
+	// Build TUI result items from query results + document metadata.
+	items := make([]tui.ResultItem, len(results))
+	for i, r := range results {
+		doc := docMap[r.DocumentId]
+		item := tui.ResultItem{
+			Rank:          i + 1,
+			Score:         r.Score,
+			Title:         r.DocumentId,
+			ChunkIndex:    int(r.ChunkIndex),
+			ChunkIndexEnd: int(r.ChunkIndexEnd),
+			Text:          r.Text,
+		}
 		if doc != nil {
 			if doc.Title != "" {
-				title = doc.Title
+				item.Title = doc.Title
 			}
-			url = doc.Url
+			item.URL = doc.Url
+			item.ChunkCount = int(doc.ChunkCount)
 		}
+		items[i] = item
+	}
 
-		// Line 1: #N {score} Title [chunk/total]
-		indexScore := fmt.Sprintf("#%d {%.3f} ", i+1, result.Score)
-		fmt.Print(redStyle.Render(indexScore))
-		fmt.Print(whiteStyle.Render(title))
-		if doc != nil && doc.ChunkCount > 0 {
-			var chunkPos string
-			if result.ChunkIndexEnd > result.ChunkIndex+1 {
-				chunkPos = fmt.Sprintf(" %d-%d/%d", result.ChunkIndex+1, result.ChunkIndexEnd, doc.ChunkCount)
+	// Launch TUI if stdout is a terminal and NO_COLOR is not set; otherwise plain text.
+	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
+	_, noColor := os.LookupEnv("NO_COLOR")
+	if isTTY && !noColor {
+		p := tea.NewProgram(tui.New(items), tea.WithAltScreen())
+		if _, err := p.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		printPlainResults(items, getTerminalWidth())
+	}
+}
+
+func printPlainResults(items []tui.ResultItem, termWidth int) {
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(termWidth),
+	)
+	if err != nil {
+		renderer = nil
+	}
+
+	for i, item := range items {
+		// Header: # #N {score} Title  chunk_pos
+		var chunkPos string
+		if item.ChunkCount > 0 {
+			if item.ChunkIndexEnd > item.ChunkIndex+1 {
+				chunkPos = fmt.Sprintf("  %d-%d/%d", item.ChunkIndex+1, item.ChunkIndexEnd, item.ChunkCount)
 			} else {
-				chunkPos = fmt.Sprintf(" %d/%d", result.ChunkIndex+1, doc.ChunkCount)
+				chunkPos = fmt.Sprintf("  %d/%d", item.ChunkIndex+1, item.ChunkCount)
 			}
-			fmt.Print(grayStyle.Render(chunkPos))
 		}
-		fmt.Println()
+		fmt.Printf("# #%d {%.3f} %s%s\n", item.Rank, item.Score, item.Title, chunkPos)
 
-		// Line 2: URL
-		if url != "" {
-			fmt.Println(blueStyle.Render("\t" + url))
+		// URL on next line
+		if item.URL != "" {
+			fmt.Println(item.URL)
 		}
 
-		// Chunk/segment text
-		if result.Text != "" {
-			if *noMerge {
-				// Truncated plain preview in no-merge mode
-				preview := formatTextPreview(result.Text, termWidth, cfg.Lines)
-				fmt.Println(grayStyle.Render(preview))
-			} else {
-				// Full markdown rendering in merge mode
-				rendered, err := renderer.Render(result.Text)
-				if err != nil {
-					fmt.Println(grayStyle.Render("\t" + result.Text))
-				} else {
+		// Blank line, then glamour-rendered markdown body
+		if item.Text != "" {
+			fmt.Println()
+			if renderer != nil {
+				rendered, err := renderer.Render(item.Text)
+				if err == nil {
 					fmt.Print(rendered)
+				} else {
+					fmt.Println(item.Text)
 				}
+			} else {
+				fmt.Println(item.Text)
 			}
 		}
 
-		fmt.Println()
+		// Separator between results (not after last)
+		if i < len(items)-1 {
+			fmt.Println("---")
+		}
 	}
 }
 
@@ -314,62 +328,4 @@ func getTerminalWidth() int {
 		return 80
 	}
 	return width
-}
-
-func formatTextPreview(text string, termWidth, maxLines int) string {
-	// Collapse whitespace
-	text = strings.ReplaceAll(text, "\n", " ")
-	text = strings.ReplaceAll(text, "\r", " ")
-	for strings.Contains(text, "  ") {
-		text = strings.ReplaceAll(text, "  ", " ")
-	}
-	text = strings.TrimSpace(text)
-
-	indentWidth := 8 // tab width
-	availableWidth := termWidth - indentWidth
-	if availableWidth < 40 {
-		availableWidth = 40
-	}
-
-	words := strings.Fields(text)
-	var lines []string
-	var currentLine strings.Builder
-	truncated := false
-
-	for _, word := range words {
-		if currentLine.Len() == 0 {
-			currentLine.WriteString(word)
-			continue
-		}
-		if currentLine.Len()+1+len(word) <= availableWidth {
-			currentLine.WriteString(" ")
-			currentLine.WriteString(word)
-			continue
-		}
-		lines = append(lines, currentLine.String())
-		if len(lines) >= maxLines {
-			truncated = true
-			break
-		}
-		currentLine.Reset()
-		currentLine.WriteString(word)
-	}
-
-	if currentLine.Len() > 0 && len(lines) < maxLines {
-		lines = append(lines, currentLine.String())
-	}
-
-	var result strings.Builder
-	for i, line := range lines {
-		result.WriteString("\t")
-		result.WriteString(line)
-		if i < len(lines)-1 {
-			result.WriteString("\n")
-		}
-	}
-	if truncated {
-		result.WriteString("...")
-	}
-
-	return result.String()
 }
