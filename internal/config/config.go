@@ -29,6 +29,13 @@ type Config struct {
 	DefaultFTSDepth    int
 	DefaultRerankDepth int
 	RRFConstant        int
+
+	// RSE defaults
+	RSEMaxLength              int
+	RSEOverallMaxLength       int
+	RSEMinimumValue           float64
+	RSEIrrelevantChunkPenalty float64
+	RSEDecayRate              float64
 }
 
 func Load() *Config {
@@ -56,6 +63,12 @@ func Load() *Config {
 		DefaultFTSDepth:    100,
 		DefaultRerankDepth: 50,
 		RRFConstant:        60,
+
+		RSEMaxLength:              15,
+		RSEOverallMaxLength:       30,
+		RSEMinimumValue:           0.5,
+		RSEIrrelevantChunkPenalty: 0.18,
+		RSEDecayRate:              30,
 	}
 }
 

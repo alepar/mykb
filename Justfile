@@ -23,4 +23,4 @@ cli:
     go build -o mykb ./cmd/mykb/
 
 proto:
-    protoc --go_out=. --go-grpc_out=. proto/mykb/v1/kb.proto
+    protoc --proto_path=proto --go_out=paths=source_relative:gen --go-grpc_out=paths=source_relative:gen mykb/v1/kb.proto
