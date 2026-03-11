@@ -32,16 +32,16 @@ func main() {
 	case "query":
 		runQuery(os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
-		printUsage()
-		os.Exit(1)
+		// Default to query: "mykb <query>" is shorthand for "mykb query <query>"
+		runQuery(os.Args[1:])
 	}
 }
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
+	fmt.Fprintln(os.Stderr, "  mykb <query> [flags]                  (shorthand for mykb query)")
+	fmt.Fprintln(os.Stderr, "  mykb query <query> [--host HOST] [--top-k N] [--vector-depth N] [--fts-depth N] [--rerank-depth N] [--no-merge]")
 	fmt.Fprintln(os.Stderr, "  mykb ingest <url> [--quiet] [--host HOST]")
-	fmt.Fprintln(os.Stderr, "  mykb query <query> [--host HOST] [--lines N] [--top-k N] [--vector-depth N] [--fts-depth N] [--rerank-depth N] [--no-merge]")
 }
 
 func connect(host string) (*grpc.ClientConn, error) {
