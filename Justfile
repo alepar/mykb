@@ -19,5 +19,8 @@ fmt:
 test:
     go test ./...
 
+cli:
+    go build -o mykb ./cmd/mykb/
+
 proto:
     protoc --go_out=. --go-grpc_out=. proto/mykb/v1/kb.proto
