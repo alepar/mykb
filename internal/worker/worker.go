@@ -179,6 +179,12 @@ func (w *Worker) doCrawl(ctx context.Context, doc *storage.Document, progress ch
 		return fmt.Errorf("write document: %w", err)
 	}
 
+	if result.RawMarkdown != "" {
+		if err := w.fs.WriteDocumentRaw(doc.ID, []byte(result.RawMarkdown)); err != nil {
+			return fmt.Errorf("write raw document: %w", err)
+		}
+	}
+
 	if result.Title != "" {
 		if err := w.pg.SetDocumentTitle(ctx, doc.ID, result.Title); err != nil {
 			return fmt.Errorf("set title: %w", err)

@@ -32,6 +32,15 @@ func (fs *FilesystemStore) WriteDocument(id string, content []byte) error {
 	return os.WriteFile(filepath.Join(dir, id+".md"), content, 0o644)
 }
 
+// WriteDocumentRaw writes the unfiltered raw markdown to disk for debugging.
+func (fs *FilesystemStore) WriteDocumentRaw(id string, content []byte) error {
+	dir := fs.docDir(id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create doc dir: %w", err)
+	}
+	return os.WriteFile(filepath.Join(dir, id+".raw.md"), content, 0o644)
+}
+
 // ReadDocument reads the full document markdown from disk.
 func (fs *FilesystemStore) ReadDocument(id string) ([]byte, error) {
 	return os.ReadFile(filepath.Join(fs.docDir(id), id+".md"))

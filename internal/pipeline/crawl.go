@@ -19,8 +19,9 @@ type Crawler struct {
 
 // CrawlResult holds the output of a successful crawl.
 type CrawlResult struct {
-	Markdown string
-	Title    string
+	Markdown    string // fit (filtered) markdown, or raw if fit is empty
+	RawMarkdown string // unfiltered raw markdown
+	Title       string
 }
 
 // NewCrawler creates a Crawler pointed at the given Crawl4AI base URL.
@@ -35,8 +36,36 @@ func NewCrawler(baseURL string) *Crawler {
 
 // crawlRequest is the POST body for /crawl.
 type crawlRequest struct {
-	URLs     []string `json:"urls"`
-	Priority int      `json:"priority"`
+	URLs          []string             `json:"urls"`
+	Priority      int                  `json:"priority"`
+	CrawlerConfig *crawlCrawlerConfig  `json:"crawler_config,omitempty"`
+}
+
+type crawlCrawlerConfig struct {
+	Type   string                  `json:"type"`
+	Params crawlCrawlerConfigParams `json:"params"`
+}
+
+type crawlCrawlerConfigParams struct {
+	MarkdownGenerator *crawlMarkdownGenerator `json:"markdown_generator,omitempty"`
+}
+
+type crawlMarkdownGenerator struct {
+	Type   string                       `json:"type"`
+	Params crawlMarkdownGeneratorParams `json:"params"`
+}
+
+type crawlMarkdownGeneratorParams struct {
+	ContentFilter *crawlContentFilter `json:"content_filter,omitempty"`
+}
+
+type crawlContentFilter struct {
+	Type   string                  `json:"type"`
+	Params crawlContentFilterParams `json:"params"`
+}
+
+type crawlContentFilterParams struct {
+	Threshold float64 `json:"threshold"`
 }
 
 // crawlResponse is the synchronous response from Crawl4AI v0.5.x.
@@ -55,6 +84,7 @@ type crawlResult struct {
 
 type crawlMarkdown struct {
 	RawMarkdown string `json:"raw_markdown"`
+	FitMarkdown string `json:"fit_markdown"`
 }
 
 type crawlMetadata struct {
@@ -62,11 +92,26 @@ type crawlMetadata struct {
 }
 
 // Crawl fetches the given URL via the Crawl4AI container and returns
-// the page content as markdown.
+// the page content as markdown. It uses PruningContentFilter to produce
+// fit_markdown (filtered content without navigation/boilerplate).
 func (c *Crawler) Crawl(ctx context.Context, url string) (CrawlResult, error) {
 	body, err := json.Marshal(crawlRequest{
 		URLs:     []string{url},
 		Priority: 10,
+		CrawlerConfig: &crawlCrawlerConfig{
+			Type: "CrawlerRunConfig",
+			Params: crawlCrawlerConfigParams{
+				MarkdownGenerator: &crawlMarkdownGenerator{
+					Type: "DefaultMarkdownGenerator",
+					Params: crawlMarkdownGeneratorParams{
+						ContentFilter: &crawlContentFilter{
+							Type:   "PruningContentFilter",
+							Params: crawlContentFilterParams{Threshold: 0.48},
+						},
+					},
+				},
+			},
+		},
 	})
 	if err != nil {
 		return CrawlResult{}, err
@@ -103,9 +148,17 @@ func (c *Crawler) Crawl(ctx context.Context, url string) (CrawlResult, error) {
 		return CrawlResult{}, fmt.Errorf("crawl4ai failed: %s", result.Error)
 	}
 
-	markdown := ""
+	rawMarkdown := ""
+	fitMarkdown := ""
 	if result.Markdown != nil {
-		markdown = result.Markdown.RawMarkdown
+		rawMarkdown = result.Markdown.RawMarkdown
+		fitMarkdown = result.Markdown.FitMarkdown
+	}
+
+	// Use fit markdown as the primary content; fall back to raw.
+	markdown := fitMarkdown
+	if markdown == "" {
+		markdown = rawMarkdown
 	}
 
 	title := ""
@@ -116,8 +169,9 @@ func (c *Crawler) Crawl(ctx context.Context, url string) (CrawlResult, error) {
 	}
 
 	return CrawlResult{
-		Markdown: markdown,
-		Title:    title,
+		Markdown:    markdown,
+		RawMarkdown: rawMarkdown,
+		Title:       title,
 	}, nil
 }
 
