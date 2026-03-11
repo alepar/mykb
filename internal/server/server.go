@@ -89,6 +89,7 @@ func (s *Server) Query(ctx context.Context, req *mykbv1.QueryRequest) (*mykbv1.Q
 		VectorDepth: int(req.GetVectorDepth()),
 		FTSDepth:    int(req.GetFtsDepth()),
 		RerankDepth: int(req.GetRerankDepth()),
+		NoMerge:     req.GetNoMerge(),
 	}
 
 	results, err := s.searcher.Search(ctx, params)
@@ -99,11 +100,12 @@ func (s *Server) Query(ctx context.Context, req *mykbv1.QueryRequest) (*mykbv1.Q
 	protoResults := make([]*mykbv1.QueryResult, len(results))
 	for i, r := range results {
 		protoResults[i] = &mykbv1.QueryResult{
-			ChunkId:    r.ChunkID,
-			DocumentId: r.DocumentID,
-			ChunkIndex: int32(r.ChunkIndex),
-			Score:      float32(r.Score),
-			Text:       r.Text,
+			ChunkId:       r.ChunkID,
+			DocumentId:    r.DocumentID,
+			ChunkIndex:    int32(r.ChunkIndex),
+			ChunkIndexEnd: int32(r.ChunkIndexEnd),
+			Score:         float32(r.Score),
+			Text:          r.Text,
 		}
 	}
 

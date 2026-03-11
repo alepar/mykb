@@ -46,7 +46,7 @@ func main() {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  mykb ingest <url> [--quiet] [--host HOST]")
-	fmt.Fprintln(os.Stderr, "  mykb query <query> [--host HOST] [--lines N] [--top-k N] [--vector-depth N] [--fts-depth N] [--rerank-depth N]")
+	fmt.Fprintln(os.Stderr, "  mykb query <query> [--host HOST] [--lines N] [--top-k N] [--vector-depth N] [--fts-depth N] [--rerank-depth N] [--no-merge]")
 }
 
 func connect(host string) (*grpc.ClientConn, error) {
@@ -143,6 +143,7 @@ func runQuery(args []string) {
 	vectorDepth := fs.Int("vector-depth", 0, "candidates from Qdrant")
 	ftsDepth := fs.Int("fts-depth", 0, "candidates from Meilisearch")
 	rerankDepth := fs.Int("rerank-depth", 0, "candidates sent to reranker")
+	noMerge := fs.Bool("no-merge", false, "return individual chunks instead of merged segments")
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
@@ -186,6 +187,7 @@ func runQuery(args []string) {
 		VectorDepth: int32(cfg.VectorDepth),
 		FtsDepth:    int32(cfg.FTSDepth),
 		RerankDepth: int32(cfg.RerankDepth),
+		NoMerge:     *noMerge,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -230,7 +232,12 @@ func runQuery(args []string) {
 		fmt.Print(redStyle.Render(indexScore))
 		fmt.Print(whiteStyle.Render(title))
 		if doc != nil && doc.ChunkCount > 0 {
-			chunkPos := fmt.Sprintf(" %d/%d", result.ChunkIndex+1, doc.ChunkCount)
+			var chunkPos string
+			if result.ChunkIndexEnd > result.ChunkIndex+1 {
+				chunkPos = fmt.Sprintf(" %d-%d/%d", result.ChunkIndex+1, result.ChunkIndexEnd, doc.ChunkCount)
+			} else {
+				chunkPos = fmt.Sprintf(" %d/%d", result.ChunkIndex+1, doc.ChunkCount)
+			}
 			fmt.Print(grayStyle.Render(chunkPos))
 		}
 		fmt.Println()
