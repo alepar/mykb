@@ -54,7 +54,7 @@ func findMatches(content, search string) []int {
 	return matches
 }
 
-// renderMainPane renders the main content pane including the viewport and optional search bar.
+// renderMainPane renders the main content pane: pinned header + scrollable viewport + status bar.
 func renderMainPane(m *Model) string {
 	mainWidth := m.width - SidebarWidth - 2
 	if mainWidth < 20 {
@@ -62,16 +62,34 @@ func renderMainPane(m *Model) string {
 	}
 
 	var sb strings.Builder
+
+	// Pinned header (always visible at top)
+	sb.WriteString(m.currentHeader)
+	sb.WriteString("\n")
+
+	// Scrollable viewport
 	sb.WriteString(m.viewport.View())
 
+	// Bottom bar: search input or scroll position
+	sb.WriteString("\n")
 	if m.mainSearching {
-		sb.WriteString("\n")
 		sb.WriteString(m.mainSearch.View())
 	} else if len(m.searchMatches) > 0 {
-		sb.WriteString("\n")
 		info := fmt.Sprintf(" match %d/%d", m.searchCursor+1, len(m.searchMatches))
 		sb.WriteString(searchStyle.Render("/" + m.mainSearch.Value()))
 		sb.WriteString(matchCountStyle.Render(info))
+	} else {
+		// Scroll position indicator
+		pct := m.viewport.ScrollPercent()
+		var pos string
+		if pct <= 0 {
+			pos = "Top"
+		} else if pct >= 1.0 {
+			pos = "Bot"
+		} else {
+			pos = fmt.Sprintf("%d%%", int(pct*100))
+		}
+		sb.WriteString(scrollInfoStyle.Render(pos))
 	}
 
 	return lipgloss.NewStyle().Width(mainWidth).Render(sb.String())

@@ -66,7 +66,8 @@ type Model struct {
 	// Main pane state
 	viewport       viewport.Model
 	renderedTexts  []string
-	currentContent string
+	currentContent string // full body for search
+	currentHeader  string // pinned header (rendered outside viewport)
 	mainSearch     textinput.Model
 	mainSearching  bool
 	searchMatches  []int
@@ -254,20 +255,22 @@ func (m Model) handleMainSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) syncMainPane() {
 	if len(m.filteredIdx) == 0 || m.selected >= len(m.filteredIdx) {
-		m.viewport.SetContent("No results.")
+		m.currentHeader = ""
+		m.currentContent = "No results."
+		m.viewport.SetContent(m.currentContent)
 		return
 	}
 	idx := m.filteredIdx[m.selected]
 	item := m.items[idx]
 	mainWidth := m.width - SidebarWidth - 2 // border
-	header := renderHeader(item, mainWidth)
+	m.currentHeader = renderHeader(item, mainWidth)
 	body := ""
 	if idx < len(m.renderedTexts) {
 		body = m.renderedTexts[idx]
 	}
-	content := header + "\n" + body
-	m.currentContent = content
-	m.viewport.SetContent(content)
+	m.currentContent = body
+	m.viewport.SetContent(body)
+	m.viewport.SetYOffset(0)
 
 	// Reset search state
 	m.searchMatches = nil
@@ -293,9 +296,10 @@ func (m *Model) updateViewport() {
 		}
 	}
 
-	vpHeight := m.height - 1
-	if vpHeight < 0 {
-		vpHeight = 0
+	// Reserve space for: pinned header (5 lines) + search/scroll bar (1 line)
+	vpHeight := m.height - 6
+	if vpHeight < 1 {
+		vpHeight = 1
 	}
 	m.viewport = viewport.New(mainWidth, vpHeight)
 	m.viewport.Style = lipgloss.NewStyle()

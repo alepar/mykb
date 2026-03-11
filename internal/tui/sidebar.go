@@ -28,9 +28,15 @@ func filterItems(items []ResultItem, filter string) []int {
 
 // renderSidebarEntry renders a single sidebar entry as two lines.
 func renderSidebarEntry(item ResultItem, width int, active bool) string {
-	rank := rankStyle.Render(fmt.Sprintf("#%d", item.Rank))
-	score := scoreStyle.Render(fmt.Sprintf("{%.2f}", item.Score))
-	domain := domainStyle.Render(item.Domain())
+	// When active, apply background to individual styled components so the
+	// highlight covers the entire entry uniformly.
+	bg := lipgloss.Color("")
+	if active {
+		bg = lipgloss.Color("236")
+	}
+	rank := rankStyle.Background(bg).Render(fmt.Sprintf("#%d", item.Rank))
+	score := scoreStyle.Background(bg).Render(fmt.Sprintf("{%.2f}", item.Score))
+	domain := domainStyle.Background(bg).Render(item.Domain())
 	line1 := fmt.Sprintf("%s %s %s", rank, score, domain)
 
 	titleText := item.Title
@@ -41,7 +47,7 @@ func renderSidebarEntry(item ResultItem, width int, active bool) string {
 		}
 		titleText = string(runes) + "\u2026"
 	}
-	line2 := "  " + titleStyle.Render(titleText)
+	line2 := "  " + titleStyle.Background(bg).Render(titleText)
 
 	entry := line1 + "\n" + line2
 	if active {
@@ -73,5 +79,10 @@ func renderSidebar(m *Model) string {
 		sb.WriteString("\n")
 	}
 
-	return sidebarStyle.Height(m.height).Render(sb.String())
+	// Focus indication: blue border when sidebar has focus, gray when not
+	borderColor := sidebarBlurBorder
+	if m.active == paneSidebar {
+		borderColor = sidebarFocusBorder
+	}
+	return sidebarStyle.BorderForeground(borderColor).Height(m.height).Render(sb.String())
 }
