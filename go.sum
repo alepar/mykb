@@ -1,3 +1,5 @@
+github.com/austinfhunter/voyageai v1.2.0 h1:/dJkyMYE6Q4pTZ+xePUxTwEYzLhHQPBo0raWXTdHgi8=
+github.com/austinfhunter/voyageai v1.2.0/go.mod h1:bOD92ZBMZ0bgrA2KNfqUWZhBug/EzJesUhLTpXuXTrk=
 golang.org/x/net v0.48.0 h1:zyQRTTrjc33Lhh0fBgT/H3oZq9WuvRR5gPC70xpDiQU=
 golang.org/x/net v0.48.0/go.mod h1:+ndRgGjkh8FGtu1w1FGbEC31if4VrNVMuKTgcAAnQRY=
 golang.org/x/sys v0.39.0 h1:CvCKL8MeisomCi6qNZ+wbb0DN9E5AATixKsvNtMoMFk=
