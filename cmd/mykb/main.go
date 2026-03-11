@@ -225,10 +225,15 @@ func runQuery(args []string) {
 			url = doc.Url
 		}
 
-		// Line 1: #N {score} Title
+		// Line 1: #N {score} Title [chunk/total]
 		indexScore := fmt.Sprintf("#%d {%.3f} ", i+1, result.Score)
 		fmt.Print(redStyle.Render(indexScore))
-		fmt.Println(whiteStyle.Render(title))
+		fmt.Print(whiteStyle.Render(title))
+		if doc != nil && doc.ChunkCount > 0 {
+			chunkPos := fmt.Sprintf(" %d/%d", result.ChunkIndex+1, doc.ChunkCount)
+			fmt.Print(grayStyle.Render(chunkPos))
+		}
+		fmt.Println()
 
 		// Line 2: URL
 		if url != "" {
