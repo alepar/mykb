@@ -147,27 +147,38 @@ func renderMainPane(m *Model) string {
 	// Scrollable viewport
 	sb.WriteString(m.viewport.View())
 
-	// Bottom bar: search input or scroll position
+	// Bottom bar: left side = search info, right side = scroll position
 	sb.WriteString("\n")
-	if m.mainSearching {
-		sb.WriteString(m.mainSearch.View())
-	} else if len(m.searchMatches) > 0 {
-		info := fmt.Sprintf(" match %d/%d", m.searchCursor+1, len(m.searchMatches))
-		sb.WriteString(searchStyle.Render("/" + m.mainSearch.Value()))
-		sb.WriteString(matchCountStyle.Render(info))
+
+	// Scroll position (always shown)
+	pct := m.viewport.ScrollPercent()
+	var scrollPos string
+	if pct <= 0 {
+		scrollPos = "Top"
+	} else if pct >= 1.0 {
+		scrollPos = "Bot"
 	} else {
-		// Scroll position indicator
-		pct := m.viewport.ScrollPercent()
-		var pos string
-		if pct <= 0 {
-			pos = "Top"
-		} else if pct >= 1.0 {
-			pos = "Bot"
-		} else {
-			pos = fmt.Sprintf("%d%%", int(pct*100))
-		}
-		sb.WriteString(scrollInfoStyle.Render(pos))
+		scrollPos = fmt.Sprintf("%d%%", int(pct*100))
 	}
+
+	// Left side: search input or match info
+	var left string
+	if m.mainSearching {
+		left = m.mainSearch.View()
+	} else if len(m.searchMatches) > 0 {
+		left = searchStyle.Render("/"+m.mainSearch.Value()) +
+			matchCountStyle.Render(fmt.Sprintf(" match %d/%d", m.searchCursor+1, len(m.searchMatches)))
+	}
+
+	// Compose: left-aligned search + right-aligned scroll
+	rightRendered := scrollInfoStyle.Render(scrollPos)
+	leftWidth := lipgloss.Width(left)
+	rightWidth := lipgloss.Width(rightRendered)
+	gap := mainWidth - leftWidth - rightWidth
+	if gap < 1 {
+		gap = 1
+	}
+	sb.WriteString(left + strings.Repeat(" ", gap) + rightRendered)
 
 	return lipgloss.NewStyle().Width(mainWidth).Render(sb.String())
 }

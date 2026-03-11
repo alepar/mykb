@@ -144,6 +144,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q":
 		return m, tea.Quit
+	case "esc":
+		// Clear search/filter in the active pane
+		if m.active == paneSidebar && m.sidebarFilter.Value() != "" {
+			m.sidebarFilter.SetValue("")
+			m.applyFilter()
+		} else if m.active == paneMain && len(m.searchMatches) > 0 {
+			m.mainSearch.SetValue("")
+			m.searchMatches = nil
+			m.searchCursor = 0
+			m.viewport.SetContent(m.currentContent)
+		}
+		return m, nil
 	case "tab":
 		if m.active == paneSidebar {
 			m.active = paneMain
