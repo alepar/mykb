@@ -75,15 +75,38 @@ func renderSidebar(m *Model) string {
 	}
 	sb.WriteString("\n")
 
-	if m.sidebarSearch {
-		sb.WriteString(m.sidebarFilter.View())
-		sb.WriteString("\n")
-	}
+	// Entries
 	for i, idx := range m.filteredIdx {
 		isActive := i == m.selected
 		entry := renderSidebarEntry(m.items[idx], contentWidth, isActive)
 		sb.WriteString(entry)
 		sb.WriteString("\n")
+	}
+
+	// Pad to push bottom bar to the last line.
+	// Header = 1 line, each entry = 3 lines (2 content + 1 blank), bottom bar = 1 line
+	usedLines := 1 + len(m.filteredIdx)*3 + 1
+	for i := usedLines; i < m.height; i++ {
+		sb.WriteString("\n")
+	}
+
+	// Bottom bar: filter input or active filter state + match count
+	if m.sidebarSearch {
+		left := m.sidebarFilter.View()
+		right := matchCountStyle.Render(fmt.Sprintf("%d/%d", len(m.filteredIdx), len(m.items)))
+		gap := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
+		if gap < 1 {
+			gap = 1
+		}
+		sb.WriteString(left + strings.Repeat(" ", gap) + right)
+	} else if m.sidebarFilter.Value() != "" {
+		left := searchStyle.Render("/" + m.sidebarFilter.Value())
+		right := matchCountStyle.Render(fmt.Sprintf("%d/%d", len(m.filteredIdx), len(m.items)))
+		gap := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
+		if gap < 1 {
+			gap = 1
+		}
+		sb.WriteString(left + strings.Repeat(" ", gap) + right)
 	}
 
 	// Focus indication: blue border when sidebar has focus, gray when not
