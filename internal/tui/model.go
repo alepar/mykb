@@ -207,6 +207,7 @@ func (m Model) handleSidebarSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		m.sidebarSearch = false
 		m.sidebarFilter.Blur()
+		m.applyFilter()
 		return m, nil
 	case "esc":
 		m.sidebarSearch = false

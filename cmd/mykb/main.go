@@ -261,13 +261,9 @@ func printPlainResults(items []tui.ResultItem, termWidth int) {
 
 	for i, item := range items {
 		// Header: # #N {score} Title  chunk_pos
-		var chunkPos string
-		if item.ChunkCount > 0 {
-			if item.ChunkIndexEnd > item.ChunkIndex+1 {
-				chunkPos = fmt.Sprintf("  %d-%d/%d", item.ChunkIndex+1, item.ChunkIndexEnd, item.ChunkCount)
-			} else {
-				chunkPos = fmt.Sprintf("  %d/%d", item.ChunkIndex+1, item.ChunkCount)
-			}
+		chunkPos := item.ChunkPosition()
+		if chunkPos != "" {
+			chunkPos = "  " + chunkPos
 		}
 		fmt.Printf("# #%d {%.3f} %s%s\n", item.Rank, item.Score, item.Title, chunkPos)
 
