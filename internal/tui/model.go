@@ -261,6 +261,14 @@ func (m Model) handleMainSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.mainSearch, cmd = m.mainSearch.Update(msg)
+	// Live highlight as user types
+	term := m.mainSearch.Value()
+	m.searchMatches = findMatches(m.currentContent, term)
+	m.searchCursor = 0
+	m.viewport.SetContent(highlightSearch(m.currentContent, term))
+	if len(m.searchMatches) > 0 {
+		m.viewport.SetYOffset(m.searchMatches[0])
+	}
 	return m, cmd
 }
 
