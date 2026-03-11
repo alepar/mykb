@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
@@ -215,7 +216,22 @@ func runQuery(args []string) {
 
 	termWidth := getTerminalWidth()
 
-	for i, result := range resp.Results {
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(termWidth),
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error creating renderer: %v\n", err)
+		os.Exit(1)
+	}
+
+	// In merge mode, deduplicate by document (keep highest-scoring segment only).
+	results := resp.Results
+	if !*noMerge {
+		results = deduplicateByDocument(results)
+	}
+
+	for i, result := range results {
 		doc := docMap[result.DocumentId]
 
 		title := result.DocumentId
@@ -247,14 +263,37 @@ func runQuery(args []string) {
 			fmt.Println(blueStyle.Render("\t" + url))
 		}
 
-		// Line 3+: chunk text preview
+		// Chunk/segment text
 		if result.Text != "" {
-			preview := formatTextPreview(result.Text, termWidth, cfg.Lines)
-			fmt.Println(grayStyle.Render(preview))
+			if *noMerge {
+				// Truncated plain preview in no-merge mode
+				preview := formatTextPreview(result.Text, termWidth, cfg.Lines)
+				fmt.Println(grayStyle.Render(preview))
+			} else {
+				// Full markdown rendering in merge mode
+				rendered, err := renderer.Render(result.Text)
+				if err != nil {
+					fmt.Println(grayStyle.Render("\t" + result.Text))
+				} else {
+					fmt.Print(rendered)
+				}
+			}
 		}
 
 		fmt.Println()
 	}
+}
+
+func deduplicateByDocument(results []*mykbv1.QueryResult) []*mykbv1.QueryResult {
+	seen := make(map[string]bool)
+	var deduped []*mykbv1.QueryResult
+	for _, r := range results {
+		if !seen[r.DocumentId] {
+			seen[r.DocumentId] = true
+			deduped = append(deduped, r)
+		}
+	}
+	return deduped
 }
 
 func uniqueDocIDs(results []*mykbv1.QueryResult) []string {
