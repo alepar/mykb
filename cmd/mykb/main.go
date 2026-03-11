@@ -1,0 +1,324 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/term"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
+	mykbv1 "mykb/gen/mykb/v1"
+	"mykb/internal/cliconfig"
+)
+
+var (
+	redStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	whiteStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	blueStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	grayStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	switch os.Args[1] {
+	case "ingest":
+		runIngest(os.Args[2:])
+	case "query":
+		runQuery(os.Args[2:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Fprintln(os.Stderr, "Usage:")
+	fmt.Fprintln(os.Stderr, "  mykb ingest <url> [--quiet] [--host HOST]")
+	fmt.Fprintln(os.Stderr, "  mykb query <query> [--host HOST] [--lines N] [--top-k N] [--vector-depth N] [--fts-depth N] [--rerank-depth N]")
+}
+
+func connect(host string) (*grpc.ClientConn, error) {
+	return grpc.NewClient(host, grpc.WithTransportCredentials(insecure.NewCredentials()))
+}
+
+// --- ingest command ---
+
+func runIngest(args []string) {
+	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
+	quiet := fs.Bool("quiet", false, "suppress progress, print ok/error only")
+	host := fs.String("host", "", "server address (default: from config)")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: mykb ingest <url> [--quiet] [--host HOST]")
+		os.Exit(1)
+	}
+	url := fs.Arg(0)
+
+	cfg := cliconfig.Load("")
+	if *host != "" {
+		cfg.Host = *host
+	}
+
+	conn, err := connect(cfg.Host)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	client := mykbv1.NewKBServiceClient(conn)
+	stream, err := client.IngestURL(context.Background(), &mykbv1.IngestURLRequest{Url: url})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	var lastStatus string
+	var stepStart time.Time
+	var progress strings.Builder
+
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if *quiet {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
+			}
+			os.Exit(1)
+		}
+
+		if *quiet {
+			continue
+		}
+
+		status := msg.GetStatus()
+		if status != lastStatus {
+			if lastStatus != "" {
+				elapsed := time.Since(stepStart)
+				fmt.Fprintf(&progress, "(%.1fs)", elapsed.Seconds())
+			}
+			fmt.Fprintf(&progress, "..%s..", status)
+			lastStatus = status
+			stepStart = time.Now()
+		}
+
+		fmt.Fprintf(os.Stderr, "\r%s", progress.String())
+	}
+
+	if *quiet {
+		fmt.Println("ok")
+	} else {
+		if lastStatus != "" {
+			elapsed := time.Since(stepStart)
+			fmt.Fprintf(&progress, "(%.1fs)", elapsed.Seconds())
+		}
+		fmt.Fprintf(os.Stderr, "\r%s done.\n", progress.String())
+	}
+}
+
+// --- query command ---
+
+func runQuery(args []string) {
+	fs := flag.NewFlagSet("query", flag.ExitOnError)
+	host := fs.String("host", "", "server address (default: from config)")
+	lines := fs.Int("lines", 0, "chunk text preview lines")
+	topK := fs.Int("top-k", 0, "number of results to display")
+	vectorDepth := fs.Int("vector-depth", 0, "candidates from Qdrant")
+	ftsDepth := fs.Int("fts-depth", 0, "candidates from Meilisearch")
+	rerankDepth := fs.Int("rerank-depth", 0, "candidates sent to reranker")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: mykb query <query> [flags]")
+		os.Exit(1)
+	}
+	query := fs.Arg(0)
+
+	cfg := cliconfig.Load("")
+	if *host != "" {
+		cfg.Host = *host
+	}
+	if *lines > 0 {
+		cfg.Lines = *lines
+	}
+	if *topK > 0 {
+		cfg.TopK = *topK
+	}
+	if *vectorDepth > 0 {
+		cfg.VectorDepth = *vectorDepth
+	}
+	if *ftsDepth > 0 {
+		cfg.FTSDepth = *ftsDepth
+	}
+	if *rerankDepth > 0 {
+		cfg.RerankDepth = *rerankDepth
+	}
+
+	conn, err := connect(cfg.Host)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	client := mykbv1.NewKBServiceClient(conn)
+
+	resp, err := client.Query(context.Background(), &mykbv1.QueryRequest{
+		Query:       query,
+		TopK:        int32(cfg.TopK),
+		VectorDepth: int32(cfg.VectorDepth),
+		FtsDepth:    int32(cfg.FTSDepth),
+		RerankDepth: int32(cfg.RerankDepth),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(resp.Results) == 0 {
+		fmt.Println("no results")
+		return
+	}
+
+	// Resolve document metadata (title, URL) via GetDocuments
+	docIDs := uniqueDocIDs(resp.Results)
+	docsResp, err := client.GetDocuments(context.Background(), &mykbv1.GetDocumentsRequest{
+		Ids: docIDs,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error fetching documents: %v\n", err)
+		os.Exit(1)
+	}
+	docMap := make(map[string]*mykbv1.Document, len(docsResp.Documents))
+	for _, doc := range docsResp.Documents {
+		docMap[doc.Id] = doc
+	}
+
+	termWidth := getTerminalWidth()
+
+	for i, result := range resp.Results {
+		doc := docMap[result.DocumentId]
+
+		title := result.DocumentId
+		url := ""
+		if doc != nil {
+			if doc.Title != "" {
+				title = doc.Title
+			}
+			url = doc.Url
+		}
+
+		// Line 1: #N {score} Title
+		indexScore := fmt.Sprintf("#%d {%.3f} ", i+1, result.Score)
+		fmt.Print(redStyle.Render(indexScore))
+		fmt.Println(whiteStyle.Render(title))
+
+		// Line 2: URL
+		if url != "" {
+			fmt.Println(blueStyle.Render("\t" + url))
+		}
+
+		// Line 3+: chunk text preview
+		if result.Text != "" {
+			preview := formatTextPreview(result.Text, termWidth, cfg.Lines)
+			fmt.Println(grayStyle.Render(preview))
+		}
+
+		fmt.Println()
+	}
+}
+
+func uniqueDocIDs(results []*mykbv1.QueryResult) []string {
+	seen := make(map[string]bool)
+	var ids []string
+	for _, r := range results {
+		if !seen[r.DocumentId] {
+			seen[r.DocumentId] = true
+			ids = append(ids, r.DocumentId)
+		}
+	}
+	return ids
+}
+
+func getTerminalWidth() int {
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		return 80
+	}
+	return width
+}
+
+func formatTextPreview(text string, termWidth, maxLines int) string {
+	// Collapse whitespace
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.ReplaceAll(text, "\r", " ")
+	for strings.Contains(text, "  ") {
+		text = strings.ReplaceAll(text, "  ", " ")
+	}
+	text = strings.TrimSpace(text)
+
+	indentWidth := 8 // tab width
+	availableWidth := termWidth - indentWidth
+	if availableWidth < 40 {
+		availableWidth = 40
+	}
+
+	words := strings.Fields(text)
+	var lines []string
+	var currentLine strings.Builder
+	truncated := false
+
+	for _, word := range words {
+		if currentLine.Len() == 0 {
+			currentLine.WriteString(word)
+			continue
+		}
+		if currentLine.Len()+1+len(word) <= availableWidth {
+			currentLine.WriteString(" ")
+			currentLine.WriteString(word)
+			continue
+		}
+		lines = append(lines, currentLine.String())
+		if len(lines) >= maxLines {
+			truncated = true
+			break
+		}
+		currentLine.Reset()
+		currentLine.WriteString(word)
+	}
+
+	if currentLine.Len() > 0 && len(lines) < maxLines {
+		lines = append(lines, currentLine.String())
+	}
+
+	var result strings.Builder
+	for i, line := range lines {
+		result.WriteString("\t")
+		result.WriteString(line)
+		if i < len(lines)-1 {
+			result.WriteString("\n")
+		}
+	}
+	if truncated {
+		result.WriteString("...")
+	}
+
+	return result.String()
+}
