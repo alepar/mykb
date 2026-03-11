@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"golang.org/x/sync/errgroup"
 
@@ -48,15 +49,17 @@ type SearchParams struct {
 	VectorDepth int
 	FTSDepth    int
 	RerankDepth int
+	NoMerge     bool
 }
 
 // SearchResult is a single result returned by Search.
 type SearchResult struct {
-	ChunkID    string
-	DocumentID string
-	ChunkIndex int
-	Score      float64
-	Text       string
+	ChunkID       string
+	DocumentID    string
+	ChunkIndex    int
+	ChunkIndexEnd int
+	Score         float64
+	Text          string
 }
 
 // chunkMeta holds the metadata we need to resolve a chunk ID back to its
@@ -183,17 +186,65 @@ func (h *HybridSearcher) Search(ctx context.Context, params SearchParams) ([]Sea
 		return nil, fmt.Errorf("rerank: %w", err)
 	}
 
-	// --- map back to SearchResult ---
-	results := make([]SearchResult, len(reranked))
+	// --- RSE or individual results ---
+	if params.NoMerge {
+		results := make([]SearchResult, len(reranked))
+		for i, rr := range reranked {
+			id := candidateIDs[rr.Index]
+			meta := metaMap[id]
+			results[i] = SearchResult{
+				ChunkID:       id,
+				DocumentID:    meta.DocumentID,
+				ChunkIndex:    meta.ChunkIndex,
+				ChunkIndexEnd: meta.ChunkIndex + 1,
+				Score:         rr.Score,
+				Text:          chunkTexts[rr.Index],
+			}
+		}
+		return results, nil
+	}
+
+	// Build RSE input from reranked results.
+	rankedChunks := make([]RankedChunk, len(reranked))
 	for i, rr := range reranked {
 		id := candidateIDs[rr.Index]
 		meta := metaMap[id]
-		results[i] = SearchResult{
-			ChunkID:    id,
+		rankedChunks[i] = RankedChunk{
 			DocumentID: meta.DocumentID,
 			ChunkIndex: meta.ChunkIndex,
+			Rank:       i,
 			Score:      rr.Score,
-			Text:       chunkTexts[rr.Index],
+		}
+	}
+
+	rseParams := RSEParams{
+		MaxLength:              h.cfg.RSEMaxLength,
+		OverallMaxLength:       h.cfg.RSEOverallMaxLength,
+		MinimumValue:           h.cfg.RSEMinimumValue,
+		IrrelevantChunkPenalty: h.cfg.RSEIrrelevantChunkPenalty,
+		DecayRate:              h.cfg.RSEDecayRate,
+	}
+	segments := ExtractSegments(rankedChunks, params.TopK, rseParams)
+
+	results := make([]SearchResult, len(segments))
+	for i, seg := range segments {
+		var merged strings.Builder
+		for ci := seg.StartChunk; ci < seg.EndChunk; ci++ {
+			text, err := h.fs.ReadChunkText(seg.DocumentID, ci)
+			if err != nil {
+				return nil, fmt.Errorf("read chunk text for %s chunk %d: %w", seg.DocumentID, ci, err)
+			}
+			if merged.Len() > 0 {
+				merged.WriteString("\n\n")
+			}
+			merged.Write(text)
+		}
+		results[i] = SearchResult{
+			DocumentID:    seg.DocumentID,
+			ChunkIndex:    seg.StartChunk,
+			ChunkIndexEnd: seg.EndChunk,
+			Score:         seg.Score,
+			Text:          merged.String(),
 		}
 	}
 
