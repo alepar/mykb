@@ -1,0 +1,82 @@
+package tui
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/charmbracelet/glamour"
+)
+
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+// renderHeader renders the header block for a result item.
+func renderHeader(item ResultItem, width int) string {
+	var sb strings.Builder
+	sb.WriteString(headerTitleStyle.Render(item.Title))
+	sb.WriteString("\n")
+	sb.WriteString(headerURLStyle.Render(item.URL))
+	if pos := item.ChunkPosition(); pos != "" {
+		sb.WriteString("  ")
+		sb.WriteString(headerChunkStyle.Render("chunk " + pos))
+	}
+	sb.WriteString("\n")
+	if width > 0 {
+		sb.WriteString(strings.Repeat("─", width))
+	}
+	return sb.String()
+}
+
+// renderMarkdown renders markdown text using glamour.
+func renderMarkdown(text string, width int) string {
+	if width < 10 {
+		width = 10
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return text
+	}
+	out, err := r.Render(text)
+	if err != nil {
+		return text
+	}
+	return out
+}
+
+// findMatches returns 0-based line indices where the search term appears (case-insensitive, ANSI-stripped).
+func findMatches(content, search string) []int {
+	if search == "" {
+		return nil
+	}
+	search = strings.ToLower(search)
+	lines := strings.Split(content, "\n")
+	var matches []int
+	for i, line := range lines {
+		stripped := ansiRegex.ReplaceAllString(line, "")
+		if strings.Contains(strings.ToLower(stripped), search) {
+			matches = append(matches, i)
+		}
+	}
+	return matches
+}
+
+// renderMainPane renders the main content pane including the viewport and optional search bar.
+func renderMainPane(m *Model) string {
+	var sb strings.Builder
+	sb.WriteString(m.viewport.View())
+
+	if m.mainSearching {
+		sb.WriteString("\n")
+		sb.WriteString(m.mainSearch.View())
+	} else if len(m.searchMatches) > 0 {
+		sb.WriteString("\n")
+		info := fmt.Sprintf(" match %d/%d", m.searchCursor+1, len(m.searchMatches))
+		sb.WriteString(searchStyle.Render("/" + m.mainSearch.Value()))
+		sb.WriteString(matchCountStyle.Render(info))
+	}
+
+	return sb.String()
+}
