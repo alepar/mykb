@@ -14,6 +14,7 @@ services:
       QDRANT_GRPC_HOST: qdrant:6334
       MEILISEARCH_HOST: http://meilisearch:7700
       CRAWL4AI_URL: http://crawl4ai:11235
+      DATA_DIR: /data/documents
     volumes:
       - ./data/documents:/data/documents:Z
 

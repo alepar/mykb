@@ -40,7 +40,7 @@ func Load() *Config {
 		Crawl4AIURL:     envOr("CRAWL4AI_URL", "http://localhost:11235"),
 		VoyageAPIKey: os.Getenv("VOYAGE_API_KEY"),
 		GRPCPort:     envOr("GRPC_PORT", "9090"),
-		DataDir:      envOr("DATA_DIR", "/data/documents"),
+		DataDir:      envOr("DATA_DIR", "data/documents"),
 
 		VoyageEmbedModel:     "voyage-context-3",
 		VoyageEmbedDimension: 2048,

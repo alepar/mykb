@@ -37,36 +37,19 @@ func (fs *FilesystemStore) ReadDocument(id string) ([]byte, error) {
 	return os.ReadFile(filepath.Join(fs.docDir(id), id+".md"))
 }
 
-func chunkFileName(id string, index int, suffix string) string {
-	return fmt.Sprintf("%s.%03d%s.md", id, index, suffix)
-}
-
 // WriteChunkText writes a chunk's text content to disk.
+// File format: {uuid}.{NNN}.md (e.g. abc123.000.md)
 func (fs *FilesystemStore) WriteChunkText(id string, index int, content []byte) error {
 	dir := fs.docDir(id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create doc dir: %w", err)
 	}
-	return os.WriteFile(filepath.Join(dir, chunkFileName(id, index, "t")), content, 0o644)
-}
-
-// WriteChunkContext writes a chunk's context content to disk.
-func (fs *FilesystemStore) WriteChunkContext(id string, index int, content []byte) error {
-	dir := fs.docDir(id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create doc dir: %w", err)
-	}
-	return os.WriteFile(filepath.Join(dir, chunkFileName(id, index, "c")), content, 0o644)
+	return os.WriteFile(filepath.Join(dir, chunkFileName(id, index)), content, 0o644)
 }
 
 // ReadChunkText reads a chunk's text content from disk.
 func (fs *FilesystemStore) ReadChunkText(id string, index int) ([]byte, error) {
-	return os.ReadFile(filepath.Join(fs.docDir(id), chunkFileName(id, index, "t")))
-}
-
-// ReadChunkContext reads a chunk's context content from disk.
-func (fs *FilesystemStore) ReadChunkContext(id string, index int) ([]byte, error) {
-	return os.ReadFile(filepath.Join(fs.docDir(id), chunkFileName(id, index, "c")))
+	return os.ReadFile(filepath.Join(fs.docDir(id), chunkFileName(id, index)))
 }
 
 // DeleteDocumentFiles removes all files belonging to a document (main doc + all chunks).
@@ -87,4 +70,8 @@ func (fs *FilesystemStore) DeleteDocumentFiles(id string) error {
 		}
 	}
 	return nil
+}
+
+func chunkFileName(id string, index int) string {
+	return fmt.Sprintf("%s.%03d.md", id, index)
 }
