@@ -19,6 +19,8 @@ services:
 
   postgres:
     image: postgres:17
+    ports:
+      - "5433:5432"
     environment:
       POSTGRES_USER: mykb
       POSTGRES_PASSWORD: mykb
@@ -28,11 +30,15 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.17.0
+    ports:
+      - "6335:6334"
     volumes:
       - ./data/qdrant:/qdrant/storage:Z
 
   meilisearch:
     image: getmeili/meilisearch:v1.37.0
+    ports:
+      - "7701:7700"
     environment:
       MEILI_MASTER_KEY: ${MEILISEARCH_KEY}
     volumes:
@@ -40,3 +46,5 @@ services:
 
   crawl4ai:
     image: unclecode/crawl4ai:latest
+    ports:
+      - "11235:11235"

@@ -6,40 +6,37 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 )
 
 func TestCrawl_SuccessfulCrawl(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/crawl":
-			var req crawlRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
-			}
-			if len(req.URLs) == 0 {
-				http.Error(w, "no urls", http.StatusBadRequest)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(crawlResponse{
-				TaskID: "task-123",
-				Status: "pending",
-			})
-
-		case r.Method == http.MethodGet && r.URL.Path == "/task/task-123":
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(taskResponse{
-				Status: "completed",
-				Result: &taskResult{
-					Markdown: "# My Page\n\nSome content here.",
-				},
-			})
-
-		default:
+		if r.Method != http.MethodPost || r.URL.Path != "/crawl" {
 			http.Error(w, "not found", http.StatusNotFound)
+			return
 		}
+		var req crawlRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if len(req.URLs) == 0 {
+			http.Error(w, "no urls", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(crawlResponse{
+			Success: true,
+			Results: []crawlResult{{
+				URL:     req.URLs[0],
+				Success: true,
+				Markdown: &crawlMarkdown{
+					RawMarkdown: "# My Page\n\nSome content here.",
+				},
+				Metadata: &crawlMetadata{
+					Title: "My Page",
+				},
+			}},
+		})
 	}))
 	defer server.Close()
 
@@ -69,35 +66,50 @@ func TestCrawl_HTTPErrorFromCrawl(t *testing.T) {
 	}
 }
 
-func TestCrawl_ContextCancellation(t *testing.T) {
+func TestCrawl_FailedResult(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Simulate a slow response that never completes
-		if r.Method == http.MethodPost && r.URL.Path == "/crawl" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(crawlResponse{
-				TaskID: "task-slow",
-				Status: "pending",
-			})
-			return
-		}
-		// Task always pending
-		if r.URL.Path == "/task/task-slow" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(taskResponse{
-				Status: "pending",
-			})
-			return
-		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(crawlResponse{
+			Success: true,
+			Results: []crawlResult{{
+				URL:     "https://example.com",
+				Success: false,
+				Error:   "page not reachable",
+			}},
+		})
 	}))
 	defer server.Close()
 
 	c := NewCrawler(server.URL)
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	_, err := c.Crawl(ctx, "https://example.com")
+	_, err := c.Crawl(context.Background(), "https://example.com")
 	if err == nil {
-		t.Fatal("expected error from cancelled context, got nil")
+		t.Fatal("expected error for failed crawl, got nil")
+	}
+}
+
+func TestCrawl_TitleFallbackToMarkdown(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(crawlResponse{
+			Success: true,
+			Results: []crawlResult{{
+				URL:     "https://example.com",
+				Success: true,
+				Markdown: &crawlMarkdown{
+					RawMarkdown: "# Markdown Title\n\nBody.",
+				},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	c := NewCrawler(server.URL)
+	result, err := c.Crawl(context.Background(), "https://example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Title != "Markdown Title" {
+		t.Errorf("expected title %q, got %q", "Markdown Title", result.Title)
 	}
 }
 
@@ -107,36 +119,12 @@ func TestExtractTitle_FromHeading(t *testing.T) {
 		markdown string
 		want     string
 	}{
-		{
-			name:     "standard h1",
-			markdown: "# Hello World\n\nBody text.",
-			want:     "Hello World",
-		},
-		{
-			name:     "h1 with extra spaces",
-			markdown: "#   Spaced Title  \n\nBody.",
-			want:     "Spaced Title",
-		},
-		{
-			name:     "no heading",
-			markdown: "Just some text without a heading.",
-			want:     "",
-		},
-		{
-			name:     "h2 only",
-			markdown: "## Not a title\n\nBody.",
-			want:     "",
-		},
-		{
-			name:     "empty markdown",
-			markdown: "",
-			want:     "",
-		},
-		{
-			name:     "heading not on first line",
-			markdown: "Some preamble\n# Actual Title\n\nBody.",
-			want:     "Actual Title",
-		},
+		{"standard h1", "# Hello World\n\nBody text.", "Hello World"},
+		{"h1 with extra spaces", "#   Spaced Title  \n\nBody.", "Spaced Title"},
+		{"no heading", "Just some text without a heading.", ""},
+		{"h2 only", "## Not a title\n\nBody.", ""},
+		{"empty markdown", "", ""},
+		{"heading not on first line", "Some preamble\n# Actual Title\n\nBody.", "Actual Title"},
 	}
 
 	for _, tt := range tests {
@@ -146,33 +134,5 @@ func TestExtractTitle_FromHeading(t *testing.T) {
 				t.Errorf("extractTitle() = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestCrawl_TaskFailed(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/crawl" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(crawlResponse{
-				TaskID: "task-fail",
-				Status: "pending",
-			})
-			return
-		}
-		if r.URL.Path == "/task/task-fail" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(taskResponse{
-				Status: "failed",
-				Error:  "page not reachable",
-			})
-			return
-		}
-	}))
-	defer server.Close()
-
-	c := NewCrawler(server.URL)
-	_, err := c.Crawl(context.Background(), "https://example.com")
-	if err == nil {
-		t.Fatal("expected error for failed task, got nil")
 	}
 }
