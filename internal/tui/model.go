@@ -10,8 +10,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+type pane int
+
 const (
-	paneSidebar = iota
+	paneSidebar pane = iota
 	paneMain
 )
 
@@ -41,10 +43,10 @@ func (r ResultItem) ChunkPosition() string {
 	if r.ChunkCount <= 0 {
 		return ""
 	}
-	if r.ChunkIndexEnd > r.ChunkIndex {
-		return fmt.Sprintf("%d-%d/%d", r.ChunkIndex, r.ChunkIndexEnd, r.ChunkCount)
+	if r.ChunkIndexEnd > r.ChunkIndex+1 {
+		return fmt.Sprintf("%d-%d/%d", r.ChunkIndex+1, r.ChunkIndexEnd, r.ChunkCount)
 	}
-	return fmt.Sprintf("%d/%d", r.ChunkIndex, r.ChunkCount)
+	return fmt.Sprintf("%d/%d", r.ChunkIndex+1, r.ChunkCount)
 }
 
 // Model is the top-level Bubble Tea model for the query TUI.
@@ -52,7 +54,7 @@ type Model struct {
 	items  []ResultItem
 	width  int
 	height int
-	active int // paneSidebar or paneMain
+	active pane // paneSidebar or paneMain
 
 	// Sidebar state
 	selected      int // index into filteredIdx
@@ -77,11 +79,11 @@ func New(items []ResultItem) Model {
 	}
 
 	sf := textinput.New()
-	sf.Prompt = "filter: "
+	sf.Prompt = "/"
 	sf.CharLimit = 128
 
 	ms := textinput.New()
-	ms.Prompt = "search: "
+	ms.Prompt = "/"
 	ms.CharLimit = 128
 
 	return Model{
@@ -129,10 +131,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Route to active input if searching/filtering
-	if m.sidebarSearch {
+	if m.sidebarSearch && m.active == paneSidebar {
 		return m.handleSidebarSearch(msg)
 	}
-	if m.mainSearching {
+	if m.mainSearching && m.active == paneMain {
 		return m.handleMainSearch(msg)
 	}
 
@@ -219,9 +221,7 @@ func (m Model) handleSidebarSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) applyFilter() {
 	m.filteredIdx = filterItems(m.items, m.sidebarFilter.Value())
-	if m.selected >= len(m.filteredIdx) {
-		m.selected = max(0, len(m.filteredIdx)-1)
-	}
+	m.selected = 0
 	m.syncMainPane()
 }
 
@@ -282,7 +282,11 @@ func (m *Model) updateViewport() {
 		m.renderedTexts[i] = renderMarkdown(item.Text, mainWidth)
 	}
 
-	m.viewport = viewport.New(mainWidth, m.height)
+	vpHeight := m.height - 1
+	if vpHeight < 0 {
+		vpHeight = 0
+	}
+	m.viewport = viewport.New(mainWidth, vpHeight)
 	m.viewport.Style = lipgloss.NewStyle()
 	m.syncMainPane()
 }

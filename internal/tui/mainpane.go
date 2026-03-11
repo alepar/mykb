@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
 )
 
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
@@ -16,13 +17,13 @@ func renderHeader(item ResultItem, width int) string {
 	sb.WriteString(headerTitleStyle.Render(item.Title))
 	sb.WriteString("\n")
 	sb.WriteString(headerURLStyle.Render(item.URL))
-	if pos := item.ChunkPosition(); pos != "" {
-		sb.WriteString("  ")
-		sb.WriteString(headerChunkStyle.Render("chunk " + pos))
-	}
 	sb.WriteString("\n")
+	if pos := item.ChunkPosition(); pos != "" {
+		sb.WriteString(headerChunkStyle.Render("Chunks " + pos))
+		sb.WriteString("\n")
+	}
 	if width > 0 {
-		sb.WriteString(strings.Repeat("─", width))
+		sb.WriteString(headerChunkStyle.Render(strings.Repeat("─", width)))
 	}
 	return sb.String()
 }
@@ -65,6 +66,8 @@ func findMatches(content, search string) []int {
 
 // renderMainPane renders the main content pane including the viewport and optional search bar.
 func renderMainPane(m *Model) string {
+	mainWidth := m.width - SidebarWidth - 2
+
 	var sb strings.Builder
 	sb.WriteString(m.viewport.View())
 
@@ -78,5 +81,5 @@ func renderMainPane(m *Model) string {
 		sb.WriteString(matchCountStyle.Render(info))
 	}
 
-	return sb.String()
+	return lipgloss.NewStyle().Width(mainWidth).Render(sb.String())
 }

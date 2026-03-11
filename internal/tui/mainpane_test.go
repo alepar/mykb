@@ -24,7 +24,7 @@ func TestRenderHeader(t *testing.T) {
 	if !strings.Contains(result, "https://example.com/article") {
 		t.Error("header should contain URL")
 	}
-	if !strings.Contains(result, "2/5") {
+	if !strings.Contains(result, "3/5") {
 		t.Error("header should contain chunk position")
 	}
 	if !strings.Contains(result, "─") {

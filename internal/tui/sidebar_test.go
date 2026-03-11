@@ -31,8 +31,8 @@ func TestResultItem_ChunkPosition(t *testing.T) {
 		item       ResultItem
 		want       string
 	}{
-		{"range", ResultItem{ChunkIndex: 3, ChunkIndexEnd: 5, ChunkCount: 8}, "3-5/8"},
-		{"single", ResultItem{ChunkIndex: 4, ChunkIndexEnd: 0, ChunkCount: 8}, "4/8"},
+		{"range", ResultItem{ChunkIndex: 2, ChunkIndexEnd: 5, ChunkCount: 8}, "3-5/8"},
+		{"single", ResultItem{ChunkIndex: 3, ChunkIndexEnd: 0, ChunkCount: 5}, "4/5"},
 		{"no count", ResultItem{ChunkIndex: 1, ChunkIndexEnd: 0, ChunkCount: 0}, ""},
 		{"negative count", ResultItem{ChunkIndex: 1, ChunkIndexEnd: 0, ChunkCount: -1}, ""},
 	}
@@ -90,8 +90,8 @@ func TestRenderSidebarEntry(t *testing.T) {
 	if !strings.Contains(result, "#1") {
 		t.Error("entry should contain rank")
 	}
-	if !strings.Contains(result, "0.95") {
-		t.Error("entry should contain score")
+	if !strings.Contains(result, "{0.95}") {
+		t.Error("entry should contain score in braces")
 	}
 	if !strings.Contains(result, "example.com") {
 		t.Error("entry should contain domain")

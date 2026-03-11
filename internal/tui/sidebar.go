@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // filterItems returns indices into items whose domain or title match the filter (case-insensitive substring).
@@ -27,13 +29,13 @@ func filterItems(items []ResultItem, filter string) []int {
 // renderSidebarEntry renders a single sidebar entry as two lines.
 func renderSidebarEntry(item ResultItem, width int, active bool) string {
 	rank := rankStyle.Render(fmt.Sprintf("#%d", item.Rank))
-	score := scoreStyle.Render(fmt.Sprintf("%.2f", item.Score))
+	score := scoreStyle.Render(fmt.Sprintf("{%.2f}", item.Score))
 	domain := domainStyle.Render(item.Domain())
 	line1 := fmt.Sprintf("%s %s %s", rank, score, domain)
 
 	titleText := item.Title
-	if len(titleText) > width-2 {
-		titleText = titleText[:width-5] + "..."
+	if lipgloss.Width(titleText) > width-2 {
+		titleText = titleText[:width-5] + "\u2026"
 	}
 	line2 := "  " + titleStyle.Render(titleText)
 
