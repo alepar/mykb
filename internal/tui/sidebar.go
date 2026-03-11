@@ -62,16 +62,23 @@ func renderSidebarEntry(item ResultItem, width int, active bool) string {
 func renderSidebar(m *Model) string {
 	var sb strings.Builder
 
-	if m.sidebarSearch {
-		sb.WriteString(m.sidebarFilter.View())
-		sb.WriteString("\n")
-	}
-
 	contentWidth := SidebarWidth - 2 // account for border
 	if contentWidth < 0 {
 		contentWidth = 0
 	}
 
+	// "Matches" header — highlighted when sidebar has focus
+	if m.active == paneSidebar {
+		sb.WriteString(focusHeaderStyle.Width(contentWidth).Render("Matches"))
+	} else {
+		sb.WriteString(blurHeaderStyle.Width(contentWidth).Render("Matches"))
+	}
+	sb.WriteString("\n")
+
+	if m.sidebarSearch {
+		sb.WriteString(m.sidebarFilter.View())
+		sb.WriteString("\n")
+	}
 	for i, idx := range m.filteredIdx {
 		isActive := i == m.selected
 		entry := renderSidebarEntry(m.items[idx], contentWidth, isActive)

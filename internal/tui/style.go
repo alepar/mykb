@@ -16,6 +16,10 @@ var (
 	domainStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
 	titleStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
 
+	// Focus header style (light blue bg, black fg) — used for sidebar "Matches" and main title when focused
+	focusHeaderStyle = lipgloss.NewStyle().Background(lipgloss.Color("12")).Foreground(lipgloss.Color("0")).Bold(true)
+	blurHeaderStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
+
 	// Main pane styles
 	headerTitleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
 	headerURLStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))

@@ -12,9 +12,14 @@ import (
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 // renderHeader renders the header block for a result item.
-func renderHeader(item ResultItem, width int) string {
+// When focused is true, the title line gets the focus highlight.
+func renderHeader(item ResultItem, width int, focused bool) string {
 	var sb strings.Builder
-	sb.WriteString(headerTitleStyle.Render(item.Title))
+	if focused {
+		sb.WriteString(focusHeaderStyle.Width(width).Render(item.Title))
+	} else {
+		sb.WriteString(blurHeaderStyle.Width(width).Render(item.Title))
+	}
 	sb.WriteString("\n")
 	sb.WriteString(headerURLStyle.Render(item.URL))
 	sb.WriteString("\n")

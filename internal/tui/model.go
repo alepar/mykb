@@ -150,6 +150,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.active = paneSidebar
 		}
+		// Re-render header to update focus highlight
+		if len(m.filteredIdx) > 0 && m.selected < len(m.filteredIdx) {
+			idx := m.filteredIdx[m.selected]
+			mainWidth := m.width - SidebarWidth - 2
+			m.currentHeader = renderHeader(m.items[idx], mainWidth, m.active == paneMain)
+		}
 		return m, nil
 	}
 
@@ -263,7 +269,7 @@ func (m *Model) syncMainPane() {
 	idx := m.filteredIdx[m.selected]
 	item := m.items[idx]
 	mainWidth := m.width - SidebarWidth - 2 // border
-	m.currentHeader = renderHeader(item, mainWidth)
+	m.currentHeader = renderHeader(item, mainWidth, m.active == paneMain)
 	body := ""
 	if idx < len(m.renderedTexts) {
 		body = m.renderedTexts[idx]

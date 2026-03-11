@@ -13,7 +13,7 @@ func TestRenderHeader(t *testing.T) {
 		ChunkCount: 5,
 	}
 
-	result := renderHeader(item, 40)
+	result := renderHeader(item, 40, false)
 
 	if result == "" {
 		t.Fatal("renderHeader returned empty string")
