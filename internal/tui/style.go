@@ -27,6 +27,7 @@ var (
 	searchStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	matchCountStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	scrollInfoStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	highlightStyle    = lipgloss.NewStyle().Background(lipgloss.Color("11")).Foreground(lipgloss.Color("0"))
 	mainFocusBorder   = lipgloss.Color("12")
 	mainBlurBorder    = lipgloss.Color("8")
 )

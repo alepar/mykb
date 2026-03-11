@@ -240,8 +240,11 @@ func (m Model) handleMainSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		m.mainSearching = false
 		m.mainSearch.Blur()
-		m.searchMatches = findMatches(m.currentContent, m.mainSearch.Value())
+		term := m.mainSearch.Value()
+		m.searchMatches = findMatches(m.currentContent, term)
 		m.searchCursor = 0
+		// Apply highlights to viewport content
+		m.viewport.SetContent(highlightSearch(m.currentContent, term))
 		if len(m.searchMatches) > 0 {
 			m.viewport.SetYOffset(m.searchMatches[0])
 		}
@@ -252,6 +255,8 @@ func (m Model) handleMainSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mainSearch.Blur()
 		m.searchMatches = nil
 		m.searchCursor = 0
+		// Restore unhighlighted content
+		m.viewport.SetContent(m.currentContent)
 		return m, nil
 	}
 	var cmd tea.Cmd

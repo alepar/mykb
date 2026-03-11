@@ -59,6 +59,78 @@ func findMatches(content, search string) []int {
 	return matches
 }
 
+// highlightSearch replaces all case-insensitive occurrences of search in the
+// ANSI-rendered content with a highlighted version. It walks each line,
+// strips ANSI to find match positions, then splices highlights into the raw line.
+func highlightSearch(content, search string) string {
+	if search == "" {
+		return content
+	}
+	lower := strings.ToLower(search)
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		stripped := ansiRegex.ReplaceAllString(line, "")
+		if !strings.Contains(strings.ToLower(stripped), lower) {
+			continue
+		}
+		// Build a mapping from stripped-index to raw-index
+		// Walk both strings in parallel, skipping ANSI sequences in raw
+		rawBytes := []byte(line)
+		strippedBytes := []byte(stripped)
+		// strippedToRaw[i] = index into rawBytes where stripped byte i starts
+		strippedToRaw := make([]int, len(strippedBytes)+1)
+		si := 0
+		ri := 0
+		for si < len(strippedBytes) && ri < len(rawBytes) {
+			// Skip ANSI escape sequences
+			if rawBytes[ri] == 0x1b && ri+1 < len(rawBytes) && rawBytes[ri+1] == '[' {
+				ri += 2
+				for ri < len(rawBytes) && !((rawBytes[ri] >= 'A' && rawBytes[ri] <= 'Z') || (rawBytes[ri] >= 'a' && rawBytes[ri] <= 'z')) {
+					ri++
+				}
+				if ri < len(rawBytes) {
+					ri++ // skip the final letter
+				}
+				continue
+			}
+			strippedToRaw[si] = ri
+			si++
+			ri++
+		}
+		strippedToRaw[len(strippedBytes)] = len(rawBytes)
+
+		// Find all matches in stripped string and splice highlights into raw
+		var result []byte
+		lastRaw := 0
+		sLower := strings.ToLower(stripped)
+		pos := 0
+		for {
+			idx := strings.Index(sLower[pos:], lower)
+			if idx < 0 {
+				break
+			}
+			matchStart := pos + idx
+			matchEnd := matchStart + len(lower)
+
+			rawStart := strippedToRaw[matchStart]
+			rawEnd := strippedToRaw[matchEnd]
+
+			// Copy everything before the match
+			result = append(result, rawBytes[lastRaw:rawStart]...)
+			// Extract the matched raw text (preserving original case) and highlight it
+			matchText := string(rawBytes[rawStart:rawEnd])
+			// Strip any ANSI from the match portion so highlight renders cleanly
+			matchPlain := ansiRegex.ReplaceAllString(matchText, "")
+			result = append(result, []byte(highlightStyle.Render(matchPlain))...)
+			lastRaw = rawEnd
+			pos = matchEnd
+		}
+		result = append(result, rawBytes[lastRaw:]...)
+		lines[i] = string(result)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // renderMainPane renders the main content pane: pinned header + scrollable viewport + status bar.
 func renderMainPane(m *Model) string {
 	mainWidth := m.width - SidebarWidth - 2

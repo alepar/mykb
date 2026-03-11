@@ -59,3 +59,58 @@ func TestFindMatches(t *testing.T) {
 		}
 	})
 }
+
+func TestHighlightSearch(t *testing.T) {
+	t.Run("plain text", func(t *testing.T) {
+		result := highlightSearch("hello world hello", "hello")
+		// The highlighted text should still contain the search term
+		stripped := ansiRegex.ReplaceAllString(result, "")
+		if !strings.Contains(stripped, "hello") {
+			t.Error("highlighted text should still contain the search term when stripped")
+		}
+		if strings.Count(stripped, "hello") != 2 {
+			t.Errorf("expected 2 occurrences of 'hello', got %d", strings.Count(stripped, "hello"))
+		}
+	})
+
+	t.Run("case insensitive", func(t *testing.T) {
+		result := highlightSearch("Hello World", "hello")
+		stripped := ansiRegex.ReplaceAllString(result, "")
+		if !strings.Contains(stripped, "Hello") {
+			t.Error("should preserve original case in highlighted output")
+		}
+	})
+
+	t.Run("with ANSI", func(t *testing.T) {
+		input := "\x1b[31mhello\x1b[0m world"
+		result := highlightSearch(input, "hello")
+		stripped := ansiRegex.ReplaceAllString(result, "")
+		if !strings.Contains(stripped, "hello") {
+			t.Error("should find and highlight through ANSI codes")
+		}
+	})
+
+	t.Run("empty search", func(t *testing.T) {
+		input := "hello world"
+		result := highlightSearch(input, "")
+		if result != input {
+			t.Error("empty search should return input unchanged")
+		}
+	})
+
+	t.Run("no match", func(t *testing.T) {
+		input := "hello world"
+		result := highlightSearch(input, "zzz")
+		if result != input {
+			t.Error("no match should return input unchanged")
+		}
+	})
+
+	t.Run("multiple matches per line", func(t *testing.T) {
+		result := highlightSearch("foo bar foo baz foo", "foo")
+		stripped := ansiRegex.ReplaceAllString(result, "")
+		if strings.Count(stripped, "foo") != 3 {
+			t.Errorf("expected 3 occurrences of 'foo' in stripped result, got %d", strings.Count(stripped, "foo"))
+		}
+	})
+}
