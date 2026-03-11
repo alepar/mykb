@@ -57,8 +57,7 @@ func main() {
 
 	// Pipeline components
 	crawler := pipeline.NewCrawler(cfg.Crawl4AIURL)
-	contextualizer := pipeline.NewContextualizer(cfg.AnthropicAPIKey, cfg.ClaudeModel)
-	embedder := pipeline.NewEmbedder(cfg.VoyageAPIKey, cfg.VoyageEmbedModel, cfg.EmbedBatchSize)
+	embedder := pipeline.NewEmbedder(cfg.VoyageAPIKey, cfg.VoyageEmbedModel, cfg.VoyageEmbedDimension)
 	indexer := pipeline.NewIndexer(qdrant, meili)
 
 	// Search
@@ -66,7 +65,7 @@ func main() {
 	searcher := search.NewHybridSearcher(embedder, qdrant, meili, reranker, fs, cfg)
 
 	// Worker
-	w := worker.NewWorker(pg, fs, crawler, contextualizer, embedder, indexer, cfg)
+	w := worker.NewWorker(pg, fs, crawler, embedder, indexer, cfg)
 	go w.Start(ctx)
 
 	// gRPC server

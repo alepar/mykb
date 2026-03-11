@@ -26,16 +26,15 @@ type workItem struct {
 }
 
 // Worker is the core pipeline orchestrator that processes documents through
-// all ingestion stages: crawl, chunk, contextualize, embed, and index.
+// all ingestion stages: crawl, chunk, embed, and index.
 type Worker struct {
-	pg             *storage.PostgresStore
-	fs             *storage.FilesystemStore
-	crawler        *pipeline.Crawler
-	contextualizer *pipeline.Contextualizer
-	embedder       *pipeline.Embedder
-	indexer        *pipeline.Indexer
-	cfg            *config.Config
-	notify         chan workItem
+	pg      *storage.PostgresStore
+	fs      *storage.FilesystemStore
+	crawler *pipeline.Crawler
+	embedder *pipeline.Embedder
+	indexer *pipeline.Indexer
+	cfg     *config.Config
+	notify  chan workItem
 }
 
 // NewWorker creates a Worker wired to all pipeline components.
@@ -43,20 +42,18 @@ func NewWorker(
 	pg *storage.PostgresStore,
 	fs *storage.FilesystemStore,
 	crawler *pipeline.Crawler,
-	contextualizer *pipeline.Contextualizer,
 	embedder *pipeline.Embedder,
 	indexer *pipeline.Indexer,
 	cfg *config.Config,
 ) *Worker {
 	return &Worker{
-		pg:             pg,
-		fs:             fs,
-		crawler:        crawler,
-		contextualizer: contextualizer,
-		embedder:       embedder,
-		indexer:        indexer,
-		cfg:            cfg,
-		notify:         make(chan workItem, 64),
+		pg:      pg,
+		fs:      fs,
+		crawler: crawler,
+		embedder: embedder,
+		indexer: indexer,
+		cfg:     cfg,
+		notify:  make(chan workItem, 64),
 	}
 }
 
@@ -84,7 +81,7 @@ func (w *Worker) NotifyWithProgress(documentID string, progress chan<- ProgressU
 
 // Start runs the background processing loop. On startup it resumes any
 // interrupted documents, then waits for new work items on the notify channel.
-// It processes documents sequentially for prompt-cache efficiency.
+// It processes documents sequentially.
 func (w *Worker) Start(ctx context.Context) {
 	// Resume interrupted docs.
 	docs, err := w.pg.GetPendingDocuments(ctx, w.cfg.MaxRetries)
@@ -148,11 +145,6 @@ func (w *Worker) ProcessDocument(ctx context.Context, docID string, progress cha
 		fallthrough
 	case "CHUNKING":
 		if err := w.doChunk(ctx, &doc, progress); err != nil {
-			return w.handleError(ctx, docID, err)
-		}
-		fallthrough
-	case "CONTEXTUALIZING":
-		if err := w.doContextualize(ctx, &doc, progress); err != nil {
 			return w.handleError(ctx, docID, err)
 		}
 		fallthrough
@@ -253,106 +245,42 @@ func (w *Worker) doChunk(ctx context.Context, doc *storage.Document, progress ch
 	return nil
 }
 
-// doContextualize reads the full document and each pending chunk, then calls
-// the contextualizer to produce context for each chunk. Chunks are processed
-// sequentially to maximize prompt cache hits.
-func (w *Worker) doContextualize(ctx context.Context, doc *storage.Document, progress chan<- ProgressUpdate) error {
-	if err := w.pg.UpdateDocumentStatus(ctx, doc.ID, "CONTEXTUALIZING"); err != nil {
-		return fmt.Errorf("set status CONTEXTUALIZING: %w", err)
-	}
-
-	docContent, err := w.fs.ReadDocument(doc.ID)
-	if err != nil {
-		return fmt.Errorf("read document: %w", err)
-	}
-
-	chunks, err := w.pg.GetChunksByDocumentAndStatus(ctx, doc.ID, "PENDING")
-	if err != nil {
-		return fmt.Errorf("get pending chunks: %w", err)
-	}
-
-	allChunks, err := w.pg.GetChunksByDocument(ctx, doc.ID)
-	if err != nil {
-		return fmt.Errorf("get all chunks: %w", err)
-	}
-	total := len(allChunks)
-	processed := total - len(chunks)
-
-	for _, chunk := range chunks {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		chunkText, err := w.fs.ReadChunkText(doc.ID, chunk.ChunkIndex)
-		if err != nil {
-			return fmt.Errorf("read chunk %d text: %w", chunk.ChunkIndex, err)
-		}
-
-		contextText, err := w.contextualizer.Contextualize(ctx, string(docContent), string(chunkText))
-		if err != nil {
-			return fmt.Errorf("contextualize chunk %d: %w", chunk.ChunkIndex, err)
-		}
-
-		if err := w.fs.WriteChunkContext(doc.ID, chunk.ChunkIndex, []byte(contextText)); err != nil {
-			return fmt.Errorf("write chunk %d context: %w", chunk.ChunkIndex, err)
-		}
-
-		if err := w.pg.UpdateChunkStatus(ctx, chunk.ID, "CONTEXTUALIZED"); err != nil {
-			return fmt.Errorf("update chunk %d status: %w", chunk.ChunkIndex, err)
-		}
-
-		processed++
-		sendProgress(progress, ProgressUpdate{
-			DocumentID:      doc.ID,
-			Status:          "CONTEXTUALIZING",
-			Message:         fmt.Sprintf("Contextualized chunk %d/%d", processed, total),
-			ChunksTotal:     total,
-			ChunksProcessed: processed,
-		})
-	}
-
-	return nil
-}
-
-// doEmbed reads contextualized chunks, builds combined texts, and embeds them
-// in batches. The resulting vectors are stored in the provided map for doIndex.
+// doEmbed reads all chunks, sends them together to the contextualized
+// embedding API, and stores the resulting vectors.
 func (w *Worker) doEmbed(ctx context.Context, doc *storage.Document, progress chan<- ProgressUpdate, vectors map[string][]float32) error {
 	if err := w.pg.UpdateDocumentStatus(ctx, doc.ID, "EMBEDDING"); err != nil {
 		return fmt.Errorf("set status EMBEDDING: %w", err)
 	}
 
-	chunks, err := w.pg.GetChunksByDocumentAndStatus(ctx, doc.ID, "CONTEXTUALIZED")
+	chunks, err := w.pg.GetChunksByDocument(ctx, doc.ID)
 	if err != nil {
-		return fmt.Errorf("get contextualized chunks: %w", err)
+		return fmt.Errorf("get chunks: %w", err)
 	}
 
 	if len(chunks) == 0 {
 		sendProgress(progress, ProgressUpdate{
 			DocumentID: doc.ID,
 			Status:     "EMBEDDING",
-			Message:    "Embedding complete (no chunks to embed)",
+			Message:    "Embedding complete (no chunks)",
 		})
 		return nil
 	}
 
-	// Build contextualized texts for embedding.
+	// Read all chunk texts in order.
 	texts := make([]string, len(chunks))
 	for i, chunk := range chunks {
 		chunkText, err := w.fs.ReadChunkText(doc.ID, chunk.ChunkIndex)
 		if err != nil {
 			return fmt.Errorf("read chunk %d text: %w", chunk.ChunkIndex, err)
 		}
-		chunkContext, err := w.fs.ReadChunkContext(doc.ID, chunk.ChunkIndex)
-		if err != nil {
-			return fmt.Errorf("read chunk %d context: %w", chunk.ChunkIndex, err)
-		}
-		texts[i] = string(chunkText) + "\n\n" + string(chunkContext)
+		texts[i] = string(chunkText)
 	}
 
-	// Embed all texts in batches (the embedder handles batching internally).
-	embeds, err := w.embedder.EmbedDocuments(ctx, texts)
+	// Embed all chunks together — the contextualized API uses sibling chunks
+	// as mutual context for better embeddings.
+	embeds, err := w.embedder.EmbedChunks(ctx, texts)
 	if err != nil {
-		return fmt.Errorf("embed documents: %w", err)
+		return fmt.Errorf("embed chunks: %w", err)
 	}
 
 	// Store vectors in memory and update chunk statuses.
@@ -363,17 +291,12 @@ func (w *Worker) doEmbed(ctx context.Context, doc *storage.Document, progress ch
 		}
 	}
 
-	allChunks, err := w.pg.GetChunksByDocument(ctx, doc.ID)
-	if err != nil {
-		return fmt.Errorf("get all chunks: %w", err)
-	}
-
 	sendProgress(progress, ProgressUpdate{
 		DocumentID:      doc.ID,
 		Status:          "EMBEDDING",
 		Message:         "Embedding complete",
-		ChunksTotal:     len(allChunks),
-		ChunksProcessed: len(allChunks),
+		ChunksTotal:     len(chunks),
+		ChunksProcessed: len(chunks),
 	})
 
 	return nil
@@ -421,16 +344,12 @@ func (w *Worker) doIndex(ctx context.Context, doc *storage.Document, progress ch
 			if err != nil {
 				return fmt.Errorf("read chunk %d text for re-embed: %w", chunk.ChunkIndex, err)
 			}
-			chunkContext, err := w.fs.ReadChunkContext(doc.ID, chunk.ChunkIndex)
-			if err != nil {
-				return fmt.Errorf("read chunk %d context for re-embed: %w", chunk.ChunkIndex, err)
-			}
-			texts[i] = string(chunkText) + "\n\n" + string(chunkContext)
+			texts[i] = string(chunkText)
 		}
 
-		embeds, err := w.embedder.EmbedDocuments(ctx, texts)
+		embeds, err := w.embedder.EmbedChunks(ctx, texts)
 		if err != nil {
-			return fmt.Errorf("re-embed documents: %w", err)
+			return fmt.Errorf("re-embed chunks: %w", err)
 		}
 		for i, chunk := range chunks {
 			vectors[chunk.ID] = embeds[i]
@@ -444,17 +363,13 @@ func (w *Worker) doIndex(ctx context.Context, doc *storage.Document, progress ch
 		if err != nil {
 			return fmt.Errorf("read chunk %d text for index: %w", chunk.ChunkIndex, err)
 		}
-		chunkContext, err := w.fs.ReadChunkContext(doc.ID, chunk.ChunkIndex)
-		if err != nil {
-			return fmt.Errorf("read chunk %d context for index: %w", chunk.ChunkIndex, err)
-		}
 
 		indexable[i] = pipeline.IndexableChunk{
 			ID:                 chunk.ID,
 			DocumentID:         doc.ID,
 			ChunkIndex:         chunk.ChunkIndex,
 			Vector:             vectors[chunk.ID],
-			ContextualizedText: string(chunkText) + "\n\n" + string(chunkContext),
+			Text:       string(chunkText),
 		}
 	}
 

@@ -26,8 +26,8 @@ type IndexableChunk struct {
 	ID                 string    // chunk UUID
 	DocumentID         string    // document UUID
 	ChunkIndex         int
-	Vector             []float32 // 1024-dim embedding
-	ContextualizedText string    // chunk_text + "\n\n" + context (for FTS)
+	Vector []float32
+	Text   string // chunk text for FTS indexing
 }
 
 // IndexChunks upserts the given chunks into both Qdrant and Meilisearch.
@@ -57,7 +57,7 @@ func (idx *Indexer) IndexChunks(ctx context.Context, chunks []IndexableChunk) er
 			ChunkID:    c.ID,
 			DocumentID: c.DocumentID,
 			ChunkIndex: c.ChunkIndex,
-			Content:    c.ContextualizedText,
+			Content:    c.Text,
 		}
 	}
 

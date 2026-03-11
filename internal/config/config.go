@@ -8,13 +8,11 @@ type Config struct {
 	MeilisearchHost string
 	MeilisearchKey  string
 	Crawl4AIURL     string
-	AnthropicAPIKey string
-	VoyageAPIKey    string
-	GRPCPort        string
-	DataDir         string
+	VoyageAPIKey string
+	GRPCPort     string
+	DataDir      string
 
 	// Model settings
-	ClaudeModel          string
 	VoyageEmbedModel     string
 	VoyageEmbedDimension int
 	VoyageRerankModel    string
@@ -40,14 +38,12 @@ func Load() *Config {
 		MeilisearchHost: envOr("MEILISEARCH_HOST", "http://localhost:7700"),
 		MeilisearchKey:  os.Getenv("MEILISEARCH_KEY"),
 		Crawl4AIURL:     envOr("CRAWL4AI_URL", "http://localhost:11235"),
-		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
-		VoyageAPIKey:    os.Getenv("VOYAGE_API_KEY"),
-		GRPCPort:        envOr("GRPC_PORT", "9090"),
-		DataDir:         envOr("DATA_DIR", "/data/documents"),
+		VoyageAPIKey: os.Getenv("VOYAGE_API_KEY"),
+		GRPCPort:     envOr("GRPC_PORT", "9090"),
+		DataDir:      envOr("DATA_DIR", "/data/documents"),
 
-		ClaudeModel:          "claude-haiku-4-5-20251001",
-		VoyageEmbedModel:     "voyage-3-large",
-		VoyageEmbedDimension: 1024,
+		VoyageEmbedModel:     "voyage-context-3",
+		VoyageEmbedDimension: 2048,
 		VoyageRerankModel:    "rerank-2",
 
 		ChunkTargetTokens: 800,

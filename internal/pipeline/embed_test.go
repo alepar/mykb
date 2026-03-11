@@ -5,171 +5,130 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
-
-	"github.com/austinfhunter/voyageai"
 )
 
-// newTestEmbedder creates an Embedder pointing at the given test server URL.
-func newTestEmbedder(baseURL string, batchSize int) *Embedder {
-	client := voyageai.NewClient(&voyageai.VoyageClientOpts{
-		Key:     "test-key",
-		BaseURL: baseURL,
-	})
-	return &Embedder{
-		client:    client,
-		model:     "voyage-3-large",
-		batchSize: batchSize,
-	}
-}
-
-// fakeEmbedServer returns an httptest.Server that counts calls and returns
-// dummy embeddings with the correct count.
-func fakeEmbedServer(t *testing.T, callCount *atomic.Int32) *httptest.Server {
+func fakeCtxEmbedServer(t *testing.T, dim int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/contextualizedembeddings" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 
-		var req voyageai.EmbeddingRequest
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer test-key" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var req ctxEmbedRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("decode request: %v", err)
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
 
-		data := make([]voyageai.EmbeddingObject, len(req.Input))
-		for i := range req.Input {
-			data[i] = voyageai.EmbeddingObject{
-				Object:    "embedding",
-				Embedding: make([]float32, 1024),
-				Index:     i,
+		// Build response matching the nested structure.
+		var groups []ctxEmbedGroup
+		totalTokens := 0
+		for gi, group := range req.Inputs {
+			var items []ctxEmbedItem
+			for ci := range group {
+				items = append(items, ctxEmbedItem{
+					Embedding: make([]float32, dim),
+					Index:     ci,
+				})
+				totalTokens += 10 // fake token count
 			}
+			groups = append(groups, ctxEmbedGroup{
+				Data:  items,
+				Index: gi,
+			})
 		}
 
-		resp := voyageai.EmbeddingResponse{
-			Object: "list",
-			Data:   data,
-			Model:  req.Model,
-		}
+		resp := ctxEmbedResponse{Data: groups}
+		resp.Usage.TotalTokens = totalTokens
 
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			t.Errorf("encode response: %v", err)
-		}
+		json.NewEncoder(w).Encode(resp)
 	}))
 }
 
-func TestEmbedDocuments_Batching(t *testing.T) {
-	var calls atomic.Int32
-	srv := fakeEmbedServer(t, &calls)
+func newTestEmbedder(baseURL string, dim int) *Embedder {
+	return &Embedder{
+		apiKey:     "test-key",
+		model:      "voyage-context-3",
+		dimension:  dim,
+		httpClient: http.DefaultClient,
+		baseURL:    baseURL,
+	}
+}
+
+func TestEmbedChunks(t *testing.T) {
+	srv := fakeCtxEmbedServer(t, 2048)
 	defer srv.Close()
 
-	emb := newTestEmbedder(srv.URL, 128)
+	emb := newTestEmbedder(srv.URL, 2048)
+	chunks := []string{"chunk one", "chunk two", "chunk three"}
 
-	// 300 texts with batch size 128 -> ceil(300/128) = 3 API calls
-	texts := make([]string, 300)
-	for i := range texts {
-		texts[i] = "text"
-	}
-
-	vecs, err := emb.EmbedDocuments(context.Background(), texts)
+	vecs, err := emb.EmbedChunks(context.Background(), chunks)
 	if err != nil {
-		t.Fatalf("EmbedDocuments: %v", err)
+		t.Fatalf("EmbedChunks: %v", err)
 	}
 
-	if got := calls.Load(); got != 3 {
-		t.Errorf("expected 3 API calls, got %d", got)
+	if len(vecs) != 3 {
+		t.Fatalf("expected 3 vectors, got %d", len(vecs))
 	}
-
-	if len(vecs) != 300 {
-		t.Errorf("expected 300 vectors, got %d", len(vecs))
-	}
-
 	for i, v := range vecs {
-		if len(v) != 1024 {
-			t.Errorf("vector %d: expected dim 1024, got %d", i, len(v))
+		if len(v) != 2048 {
+			t.Errorf("vector %d: expected dim 2048, got %d", i, len(v))
 		}
 	}
 }
 
-func TestEmbedDocuments_Empty(t *testing.T) {
-	emb := newTestEmbedder("http://unused", 128)
-	vecs, err := emb.EmbedDocuments(context.Background(), nil)
+func TestEmbedChunks_Empty(t *testing.T) {
+	emb := newTestEmbedder("http://unused", 2048)
+	vecs, err := emb.EmbedChunks(context.Background(), nil)
 	if err != nil {
-		t.Fatalf("EmbedDocuments(nil): %v", err)
+		t.Fatalf("EmbedChunks(nil): %v", err)
 	}
 	if vecs != nil {
 		t.Errorf("expected nil, got %v", vecs)
 	}
 }
 
-func TestEmbedDocuments_SingleBatch(t *testing.T) {
-	var calls atomic.Int32
-	srv := fakeEmbedServer(t, &calls)
-	defer srv.Close()
-
-	emb := newTestEmbedder(srv.URL, 128)
-
-	texts := make([]string, 50)
-	for i := range texts {
-		texts[i] = "text"
-	}
-
-	vecs, err := emb.EmbedDocuments(context.Background(), texts)
-	if err != nil {
-		t.Fatalf("EmbedDocuments: %v", err)
-	}
-
-	if got := calls.Load(); got != 1 {
-		t.Errorf("expected 1 API call, got %d", got)
-	}
-
-	if len(vecs) != 50 {
-		t.Errorf("expected 50 vectors, got %d", len(vecs))
-	}
-}
-
-func TestEmbedDocuments_CancelledContext(t *testing.T) {
-	var calls atomic.Int32
-	srv := fakeEmbedServer(t, &calls)
-	defer srv.Close()
-
-	emb := newTestEmbedder(srv.URL, 128)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
-
-	texts := []string{"hello"}
-	_, err := emb.EmbedDocuments(ctx, texts)
-	if err == nil {
-		t.Fatal("expected error from cancelled context")
-	}
-}
-
 func TestEmbedQuery(t *testing.T) {
-	var calls atomic.Int32
-	srv := fakeEmbedServer(t, &calls)
+	srv := fakeCtxEmbedServer(t, 2048)
 	defer srv.Close()
 
-	emb := newTestEmbedder(srv.URL, 128)
-
+	emb := newTestEmbedder(srv.URL, 2048)
 	vec, err := emb.EmbedQuery(context.Background(), "search query")
 	if err != nil {
 		t.Fatalf("EmbedQuery: %v", err)
 	}
 
-	if got := calls.Load(); got != 1 {
-		t.Errorf("expected 1 API call, got %d", got)
+	if len(vec) != 2048 {
+		t.Errorf("expected dim 2048, got %d", len(vec))
 	}
+}
 
-	if len(vec) != 1024 {
-		t.Errorf("expected dim 1024, got %d", len(vec))
+func TestEmbedChunks_CancelledContext(t *testing.T) {
+	srv := fakeCtxEmbedServer(t, 2048)
+	defer srv.Close()
+
+	emb := newTestEmbedder(srv.URL, 2048)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := emb.EmbedChunks(ctx, []string{"hello"})
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
 	}
 }
 
 func TestEmbedQuery_CancelledContext(t *testing.T) {
-	emb := newTestEmbedder("http://unused", 128)
+	emb := newTestEmbedder("http://unused", 2048)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -180,81 +139,49 @@ func TestEmbedQuery_CancelledContext(t *testing.T) {
 	}
 }
 
-func TestNewEmbedder_DefaultBatchSize(t *testing.T) {
-	emb := NewEmbedder("key", "model", 0)
-	if emb.batchSize != 128 {
-		t.Errorf("expected default batch size 128, got %d", emb.batchSize)
-	}
-}
-
-func TestEmbedDocuments_InputTypeDocument(t *testing.T) {
-	var capturedInputType string
+func TestEmbedChunks_APIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req voyageai.EmbeddingRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		if req.InputType != nil {
-			capturedInputType = *req.InputType
-		}
-
-		resp := voyageai.EmbeddingResponse{
-			Object: "list",
-			Data: []voyageai.EmbeddingObject{{
-				Object:    "embedding",
-				Embedding: make([]float32, 1024),
-				Index:     0,
-			}},
-			Model: req.Model,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
 
-	emb := newTestEmbedder(srv.URL, 128)
-	_, err := emb.EmbedDocuments(context.Background(), []string{"test"})
-	if err != nil {
-		t.Fatalf("EmbedDocuments: %v", err)
-	}
-	if capturedInputType != "document" {
-		t.Errorf("expected input_type=document, got %q", capturedInputType)
+	emb := newTestEmbedder(srv.URL, 2048)
+	_, err := emb.EmbedChunks(context.Background(), []string{"test"})
+	if err == nil {
+		t.Fatal("expected error from API error")
 	}
 }
 
-func TestEmbedQuery_InputTypeQuery(t *testing.T) {
-	var capturedInputType string
+func TestEmbedChunks_RequestFormat(t *testing.T) {
+	var captured ctxEmbedRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req voyageai.EmbeddingRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		if req.InputType != nil {
-			capturedInputType = *req.InputType
-		}
-
-		resp := voyageai.EmbeddingResponse{
-			Object: "list",
-			Data: []voyageai.EmbeddingObject{{
-				Object:    "embedding",
-				Embedding: make([]float32, 1024),
-				Index:     0,
-			}},
-			Model: req.Model,
-		}
+		json.NewDecoder(r.Body).Decode(&captured)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		json.NewEncoder(w).Encode(ctxEmbedResponse{
+			Data: []ctxEmbedGroup{{
+				Data: []ctxEmbedItem{
+					{Embedding: make([]float32, 2048), Index: 0},
+					{Embedding: make([]float32, 2048), Index: 1},
+				},
+				Index: 0,
+			}},
+		})
 	}))
 	defer srv.Close()
 
-	emb := newTestEmbedder(srv.URL, 128)
-	_, err := emb.EmbedQuery(context.Background(), "search")
-	if err != nil {
-		t.Fatalf("EmbedQuery: %v", err)
+	emb := newTestEmbedder(srv.URL, 2048)
+	emb.EmbedChunks(context.Background(), []string{"a", "b"})
+
+	if captured.InputType != "document" {
+		t.Errorf("expected input_type=document, got %q", captured.InputType)
 	}
-	if capturedInputType != "query" {
-		t.Errorf("expected input_type=query, got %q", capturedInputType)
+	if captured.OutputDtype != "int8" {
+		t.Errorf("expected output_dtype=int8, got %q", captured.OutputDtype)
+	}
+	if captured.OutputDimension != 2048 {
+		t.Errorf("expected output_dimension=2048, got %d", captured.OutputDimension)
+	}
+	if len(captured.Inputs) != 1 || len(captured.Inputs[0]) != 2 {
+		t.Errorf("expected inputs=[[a,b]], got %v", captured.Inputs)
 	}
 }
