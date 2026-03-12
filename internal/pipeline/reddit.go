@@ -1,11 +1,13 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"regexp"
 	"sort"
 	"strings"
@@ -51,25 +53,13 @@ func fetchRedditThread(ctx context.Context, client *http.Client, threadURL strin
 	// Build JSON API URL: strip trailing slash, append .json
 	u := strings.TrimRight(threadURL, "/") + ".json"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	body, err := fetchRedditJSON(ctx, client, u)
 	if err != nil {
-		return redditPostData{}, nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("User-Agent", "mykb/1.0")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return redditPostData{}, nil, fmt.Errorf("fetch reddit thread: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return redditPostData{}, nil, fmt.Errorf("reddit returned status %d: %s", resp.StatusCode, string(body))
+		return redditPostData{}, nil, err
 	}
 
 	var listings [2]redditListing
-	if err := json.NewDecoder(resp.Body).Decode(&listings); err != nil {
+	if err := json.Unmarshal(body, &listings); err != nil {
 		return redditPostData{}, nil, fmt.Errorf("decode reddit JSON: %w", err)
 	}
 
@@ -86,6 +76,49 @@ func fetchRedditThread(ctx context.Context, client *http.Client, threadURL strin
 	comments := parseCommentChildren(listings[1].Data.Children)
 
 	return post, comments, nil
+}
+
+// fetchRedditJSON fetches the Reddit JSON API URL. It tries Go's HTTP client
+// first, falling back to wget if Reddit blocks the request (403) due to TLS
+// fingerprinting.
+func fetchRedditJSON(ctx context.Context, client *http.Client, u string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("User-Agent", "mykb/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch reddit thread: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusForbidden {
+		// Reddit likely blocked Go's TLS fingerprint. Fall back to wget.
+		return fetchRedditJSONWget(ctx, u)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("reddit returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+// fetchRedditJSONWget uses wget to fetch Reddit JSON, bypassing Go's TLS
+// fingerprint which Reddit blocks.
+func fetchRedditJSONWget(ctx context.Context, u string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "wget", "-q", "-O", "-",
+		"--header=User-Agent: mykb/1.0", u)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("wget reddit JSON: %w: %s", err, stderr.String())
+	}
+	return stdout.Bytes(), nil
 }
 
 // parseCommentChildren converts redditListingChild entries into redditComment tree nodes.
