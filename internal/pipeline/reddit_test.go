@@ -237,6 +237,97 @@ func TestSelectComments_IncludesAncestors(t *testing.T) {
 	}
 }
 
+func TestRedditIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	client := &http.Client{}
+	threadURL := "https://www.reddit.com/r/Rag/comments/1rhpmqw/improved_retrieval_accuracy_from_50_to_91_on/"
+
+	// 1. Fetch the thread
+	post, comments, err := fetchRedditThread(ctx, client, threadURL)
+	if err != nil {
+		if strings.Contains(err.Error(), "status 403") || strings.Contains(err.Error(), "status 429") {
+			t.Skip("skipping: Reddit blocked request (likely TLS fingerprint or rate limit)")
+		}
+		t.Fatalf("fetchRedditThread: %v", err)
+	}
+
+	// Verify post has non-empty title containing "retrieval accuracy" and non-empty selftext
+	if !strings.Contains(strings.ToLower(post.Title), "retrieval accuracy") {
+		t.Errorf("expected title to contain 'retrieval accuracy', got %q", post.Title)
+	}
+	if post.Selftext == "" {
+		t.Error("expected non-empty selftext")
+	}
+
+	// 2. Comments are returned
+	if len(comments) == 0 {
+		t.Fatal("expected at least one comment")
+	}
+
+	// 3. At least one comment has nested replies
+	hasNested := false
+	var checkReplies func([]redditComment)
+	checkReplies = func(cs []redditComment) {
+		for _, c := range cs {
+			if len(c.Replies) > 0 {
+				hasNested = true
+				return
+			}
+			checkReplies(c.Replies)
+		}
+	}
+	checkReplies(comments)
+	if !hasNested {
+		t.Error("expected at least one comment with nested replies")
+	}
+
+	// 4. selectComments with 20000 budget returns comments
+	selected := selectComments(comments, 20000)
+	if len(selected) == 0 {
+		t.Error("selectComments(20000) returned no comments")
+	}
+
+	// 5. renderCommentsMarkdown output contains author attribution and score
+	md := renderCommentsMarkdown(selected)
+	if !strings.Contains(md, "**u/") {
+		t.Error("rendered markdown missing author attribution (**u/)")
+	}
+	if !strings.Contains(md, "pts)") {
+		t.Error("rendered markdown missing score (pts)")
+	}
+
+	// 6. Full assembled markdown contains expected headings
+	var sb strings.Builder
+	sb.WriteString("# ")
+	sb.WriteString(post.Title)
+	sb.WriteString("\n\n")
+	if post.Selftext != "" {
+		sb.WriteString(post.Selftext)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("## Comments\n\n")
+	sb.WriteString(md)
+	assembled := sb.String()
+
+	if !strings.Contains(assembled, "# Improved retrieval accuracy") {
+		t.Error("assembled markdown missing '# Improved retrieval accuracy'")
+	}
+	if !strings.Contains(assembled, "## Comments") {
+		t.Error("assembled markdown missing '## Comments'")
+	}
+
+	// 7. Log stats
+	t.Logf("Post title: %s", post.Title)
+	t.Logf("Selftext length: %d", len(post.Selftext))
+	t.Logf("Comment count: %d", len(comments))
+	t.Logf("Selected count: %d", len(selected))
+	t.Logf("Assembled markdown length: %d", len(assembled))
+}
+
 func TestRenderCommentsMarkdown(t *testing.T) {
 	comments := []redditComment{
 		{
