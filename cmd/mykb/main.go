@@ -41,7 +41,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  mykb <query> [flags]                  (shorthand for mykb query)")
 	fmt.Fprintln(os.Stderr, "  mykb query <query> [--host HOST] [--top-k N] [--vector-depth N] [--fts-depth N] [--rerank-depth N] [--no-merge]")
-	fmt.Fprintln(os.Stderr, "  mykb ingest <url> [--quiet] [--host HOST]")
+	fmt.Fprintln(os.Stderr, "  mykb ingest <url> [--quiet] [--force] [--host HOST]")
 }
 
 func connect(host string) (*grpc.ClientConn, error) {
@@ -53,11 +53,12 @@ func connect(host string) (*grpc.ClientConn, error) {
 func runIngest(args []string) {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	quiet := fs.Bool("quiet", false, "suppress progress, print ok/error only")
+	force := fs.Bool("force", false, "re-ingest even if URL already exists")
 	host := fs.String("host", "", "server address (default: from config)")
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: mykb ingest <url> [--quiet] [--host HOST]")
+		fmt.Fprintln(os.Stderr, "Usage: mykb ingest <url> [--quiet] [--force] [--host HOST]")
 		os.Exit(1)
 	}
 	url := fs.Arg(0)
@@ -75,7 +76,7 @@ func runIngest(args []string) {
 	defer conn.Close()
 
 	client := mykbv1.NewKBServiceClient(conn)
-	stream, err := client.IngestURL(context.Background(), &mykbv1.IngestURLRequest{Url: url})
+	stream, err := client.IngestURL(context.Background(), &mykbv1.IngestURLRequest{Url: url, Force: *force})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -232,6 +233,12 @@ func runQuery(args []string) {
 			}
 			item.URL = doc.Url
 			item.ChunkCount = int(doc.ChunkCount)
+			if doc.CreatedAt != 0 {
+				item.CreatedAt = time.Unix(doc.CreatedAt, 0)
+			}
+			if doc.UpdatedAt != 0 {
+				item.UpdatedAt = time.Unix(doc.UpdatedAt, 0)
+			}
 		}
 		items[i] = item
 	}
@@ -270,6 +277,18 @@ func printPlainResults(items []tui.ResultItem, termWidth int) {
 		// URL on next line
 		if item.URL != "" {
 			fmt.Println(item.URL)
+		}
+
+		// Dates
+		var dates []string
+		if !item.CreatedAt.IsZero() {
+			dates = append(dates, "Added "+item.CreatedAt.Format("2006-01-02"))
+		}
+		if !item.UpdatedAt.IsZero() {
+			dates = append(dates, "Ingested "+item.UpdatedAt.Format("2006-01-02"))
+		}
+		if len(dates) > 0 {
+			fmt.Println(strings.Join(dates, "  "))
 		}
 
 		// Blank line, then glamour-rendered markdown body

@@ -24,6 +24,7 @@ const (
 type IngestURLRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	Force         bool                   `protobuf:"varint,2,opt,name=force,proto3" json:"force,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -63,6 +64,13 @@ func (x *IngestURLRequest) GetUrl() string {
 		return x.Url
 	}
 	return ""
+}
+
+func (x *IngestURLRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
 }
 
 type IngestProgress struct {
@@ -364,6 +372,7 @@ type Document struct {
 	CreatedAt     int64                  `protobuf:"varint,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	CrawledAt     int64                  `protobuf:"varint,8,opt,name=crawled_at,json=crawledAt,proto3" json:"crawled_at,omitempty"`
 	Content       string                 `protobuf:"bytes,9,opt,name=content,proto3" json:"content,omitempty"`
+	UpdatedAt     int64                  `protobuf:"varint,10,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -459,6 +468,13 @@ func (x *Document) GetContent() string {
 		return x.Content
 	}
 	return ""
+}
+
+func (x *Document) GetUpdatedAt() int64 {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return 0
 }
 
 type ListDocumentsRequest struct {
@@ -745,9 +761,10 @@ var File_mykb_v1_kb_proto protoreflect.FileDescriptor
 
 const file_mykb_v1_kb_proto_rawDesc = "" +
 	"\n" +
-	"\x10mykb/v1/kb.proto\x12\amykb.v1\"$\n" +
+	"\x10mykb/v1/kb.proto\x12\amykb.v1\":\n" +
 	"\x10IngestURLRequest\x12\x10\n" +
-	"\x03url\x18\x01 \x01(\tR\x03url\"\xb1\x01\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x14\n" +
+	"\x05force\x18\x02 \x01(\bR\x05force\"\xb1\x01\n" +
 	"\x0eIngestProgress\x12\x1f\n" +
 	"\vdocument_id\x18\x01 \x01(\tR\n" +
 	"documentId\x12\x16\n" +
@@ -772,7 +789,7 @@ const file_mykb_v1_kb_proto_rawDesc = "" +
 	"chunkIndex\x12\x14\n" +
 	"\x05score\x18\x04 \x01(\x02R\x05score\x12\x12\n" +
 	"\x04text\x18\x05 \x01(\tR\x04text\x12&\n" +
-	"\x0fchunk_index_end\x18\x06 \x01(\x05R\rchunkIndexEnd\"\xe9\x01\n" +
+	"\x0fchunk_index_end\x18\x06 \x01(\x05R\rchunkIndexEnd\"\x88\x02\n" +
 	"\bDocument\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12\x14\n" +
@@ -785,7 +802,10 @@ const file_mykb_v1_kb_proto_rawDesc = "" +
 	"created_at\x18\a \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
 	"crawled_at\x18\b \x01(\x03R\tcrawledAt\x12\x18\n" +
-	"\acontent\x18\t \x01(\tR\acontent\"D\n" +
+	"\acontent\x18\t \x01(\tR\acontent\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\n" +
+	" \x01(\x03R\tupdatedAt\"D\n" +
 	"\x14ListDocumentsRequest\x12\x14\n" +
 	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12\x16\n" +
 	"\x06offset\x18\x02 \x01(\x05R\x06offset\"^\n" +

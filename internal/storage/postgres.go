@@ -200,6 +200,21 @@ func (s *PostgresStore) GetDocument(ctx context.Context, id string) (Document, e
 	return d, nil
 }
 
+// GetDocumentByURL retrieves a document by its URL.
+func (s *PostgresStore) GetDocumentByURL(ctx context.Context, url string) (Document, error) {
+	var d Document
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, url, status, error, title, chunk_count, retry_count,
+		        next_retry_at, crawled_at, created_at, updated_at
+		 FROM documents WHERE url = $1`, url,
+	).Scan(&d.ID, &d.URL, &d.Status, &d.Error, &d.Title, &d.ChunkCount,
+		&d.RetryCount, &d.NextRetryAt, &d.CrawledAt, &d.CreatedAt, &d.UpdatedAt)
+	if err != nil {
+		return Document{}, fmt.Errorf("get document by url: %w", err)
+	}
+	return d, nil
+}
+
 // GetDocumentsByIDs retrieves multiple documents by their IDs.
 func (s *PostgresStore) GetDocumentsByIDs(ctx context.Context, ids []string) ([]Document, error) {
 	rows, err := s.pool.Query(ctx,

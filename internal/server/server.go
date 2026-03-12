@@ -54,6 +54,16 @@ func NewServer(
 func (s *Server) IngestURL(req *mykbv1.IngestURLRequest, stream grpc.ServerStreamingServer[mykbv1.IngestProgress]) error {
 	ctx := stream.Context()
 
+	// If force is set, delete the existing document first.
+	if req.GetForce() {
+		existing, err := s.pg.GetDocumentByURL(ctx, req.GetUrl())
+		if err == nil && existing.ID != "" {
+			if _, err := s.DeleteDocument(ctx, &mykbv1.DeleteDocumentRequest{Id: existing.ID}); err != nil {
+				log.Printf("server: force delete of existing document %s failed: %v", existing.ID, err)
+			}
+		}
+	}
+
 	doc, err := s.pg.InsertDocument(ctx, req.GetUrl())
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
@@ -200,6 +210,7 @@ func documentToProto(doc storage.Document) *mykbv1.Document {
 		Url:       doc.URL,
 		Status:    doc.Status,
 		CreatedAt: doc.CreatedAt.Unix(),
+		UpdatedAt: doc.UpdatedAt.Unix(),
 	}
 	if doc.Error != nil {
 		d.Error = *doc.Error
