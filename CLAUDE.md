@@ -52,15 +52,24 @@ MyKB is a RAG knowledge base: ingest web pages, chunk them, embed with Voyage AI
 
 ## Docker Compose Services
 
-| Service | Host Port | Purpose |
-|---------|-----------|---------|
-| mykb | 9090 | gRPC API server |
-| postgres | 5433 | Metadata (note: host port 5433, not 5432) |
-| qdrant | 6335 (gRPC), 6336 (HTTP) | Vector search |
-| meilisearch | 7701 | Full-text search |
-| crawl4ai | 11235 | Web scraping |
+| Service | Host Port | Internal Port | Purpose |
+|---------|-----------|---------------|---------|
+| mykb | 9090 | 9090 | gRPC API server |
+| postgres | 5433 | 5432 | Document/chunk metadata |
+| qdrant | 6335 (gRPC), 6336 (HTTP) | 6334 (gRPC), 6333 (HTTP) | Vector search |
+| meilisearch | 7701 | 7700 | Full-text search |
+| crawl4ai | 11235 | 11235 | Web scraping |
 
-Requires `.env` file with `VOYAGE_API_KEY` and optionally `MEILISEARCH_KEY`.
+**Database/index names:**
+
+| Backend | Name | Primary Key | Notes |
+|---------|------|-------------|-------|
+| PostgreSQL | `documents` table | `id` (uuid) | Unique constraint on `url` |
+| PostgreSQL | `chunks` table | `id` (uuid) | FK to `documents.id` (cascades) |
+| Qdrant | `mykb` collection | chunk uuid | 2048-dim vectors (voyage-context-3), cosine, int8 quantization |
+| Meilisearch | `mykb` index | `chunk_id` | FTS on `content`, filterable by `document_id`, `chunk_id`, `chunk_index` |
+
+Requires `.env` file with `VOYAGE_API_KEY` and `MEILISEARCH_KEY`.
 
 ## Data Preservation
 
@@ -71,8 +80,8 @@ Chunks metadata and search index data (Qdrant, Meilisearch) are less critical â€
 ## Clearing Test Data
 
 ```bash
-curl -X DELETE 'http://localhost:6336/collections/chunks'
-curl -X DELETE 'http://localhost:7701/indexes/chunks'
+curl -X DELETE 'http://localhost:6336/collections/mykb'
+curl -X DELETE -H 'Authorization: Bearer mykb-dev-key' 'http://localhost:7701/indexes/mykb'
 docker compose exec -T postgres psql -U mykb -d mykb -c "DELETE FROM chunks; DELETE FROM documents;"
-docker compose restart mykb  # recreates collections/indexes
+docker compose restart mykb  # recreates collection/index on startup
 ```
