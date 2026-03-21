@@ -23,8 +23,18 @@ func renderHeader(item ResultItem, width int, focused bool) string {
 	sb.WriteString("\n")
 	sb.WriteString(headerURLStyle.Render(item.URL))
 	sb.WriteString("\n")
+	var meta []string
 	if pos := item.ChunkPosition(); pos != "" {
-		sb.WriteString(headerChunkStyle.Render("Chunks " + pos))
+		meta = append(meta, "Chunks "+pos)
+	}
+	if !item.CreatedAt.IsZero() {
+		meta = append(meta, "Added "+item.CreatedAt.Format("2006-01-02"))
+	}
+	if !item.UpdatedAt.IsZero() {
+		meta = append(meta, "Ingested "+item.UpdatedAt.Format("2006-01-02"))
+	}
+	if len(meta) > 0 {
+		sb.WriteString(headerChunkStyle.Render(strings.Join(meta, "  ")))
 		sb.WriteString("\n")
 	}
 	if width > 0 {

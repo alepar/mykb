@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -27,6 +28,8 @@ type ResultItem struct {
 	ChunkIndex    int
 	ChunkIndexEnd int
 	ChunkCount    int
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 	Text          string
 }
 
