@@ -14,12 +14,6 @@ just proto              # regenerate gRPC code from proto/mykb/v1/kb.proto
 just up / just down     # docker compose up -d / down
 ```
 
-**Known issue:** `go test ./...` and `go build ./...` fail with permission denied on `data/postgres/` (Docker-owned volume). Use specific package paths instead:
-```bash
-go test ./cmd/... ./internal/... ./gen/...
-go build ./cmd/... ./internal/... ./gen/...
-```
-
 Run a single test:
 ```bash
 go test ./internal/pipeline/ -run TestChunkMarkdown_HeadingSplits -v
@@ -73,7 +67,7 @@ Requires `.env` file with `VOYAGE_API_KEY` and `MEILISEARCH_KEY`.
 
 ## Data Preservation
 
-**IMPORTANT: Protect local database contents.** The PostgreSQL `documents` table records which URLs have been ingested — this metadata is very hard to recreate (requires manually rediscovering all original URLs). Never run `docker compose down -v` or otherwise destroy the Postgres volume. Avoid `DELETE FROM documents` unless explicitly asked.
+**IMPORTANT: Protect local database contents.** Data is stored in `~/.local/share/mykb/` (machine-local, not synced between machines). The PostgreSQL `documents` table records which URLs have been ingested — this metadata is very hard to recreate (requires manually rediscovering all original URLs). Never run `docker compose down -v` or otherwise destroy the Postgres volume. Avoid `DELETE FROM documents` unless explicitly asked.
 
 Chunks metadata and search index data (Qdrant, Meilisearch) are less critical — they can be recreated by re-ingesting, which costs embedding API calls but is tolerable at small volumes.
 
