@@ -16,7 +16,7 @@ services:
       CRAWL4AI_URL: http://crawl4ai:11235
       DATA_DIR: /data/documents
     volumes:
-      - ./data/documents:/data/documents:Z
+      - ${HOME}/.local/share/mykb/documents:/data/documents:Z
 
   postgres:
     image: postgres:17
@@ -27,24 +27,26 @@ services:
       POSTGRES_PASSWORD: mykb
       POSTGRES_DB: mykb
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data:Z
+      - ${HOME}/.local/share/mykb/postgres:/var/lib/postgresql/data:Z
 
   qdrant:
     image: qdrant/qdrant:v1.17.0
+    user: "0:1000"
     ports:
       - "6335:6334"
       - "6336:6333"
     volumes:
-      - ./data/qdrant:/qdrant/storage:Z
+      - ${HOME}/.local/share/mykb/qdrant:/qdrant/storage:Z
 
   meilisearch:
     image: getmeili/meilisearch:v1.37.0
+    user: "0:1000"
     ports:
       - "7701:7700"
     environment:
       MEILI_MASTER_KEY: ${MEILISEARCH_KEY}
     volumes:
-      - ./data/meili:/meili_data:Z
+      - ${HOME}/.local/share/mykb/meili:/meili_data:Z
 
   crawl4ai:
     image: unclecode/crawl4ai:latest
