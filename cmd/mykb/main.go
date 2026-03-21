@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 	mykbv1 "mykb/gen/mykb/v1"
 	"mykb/internal/cliconfig"
+	"mykb/internal/tabs"
 	"mykb/internal/tui"
 )
 
@@ -31,6 +33,8 @@ func main() {
 		runIngest(os.Args[2:])
 	case "query":
 		runQuery(os.Args[2:])
+	case "import-tabs":
+		runImportTabs(os.Args[2:])
 	default:
 		// Default to query: "mykb <query>" is shorthand for "mykb query <query>"
 		runQuery(os.Args[1:])
@@ -42,6 +46,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  mykb <query> [flags]                  (shorthand for mykb query)")
 	fmt.Fprintln(os.Stderr, "  mykb query <query> [--host HOST] [--top-k N] [--vector-depth N] [--fts-depth N] [--rerank-depth N] [--no-merge]")
 	fmt.Fprintln(os.Stderr, "  mykb ingest <url> [--quiet] [--force] [--host HOST]")
+	fmt.Fprintln(os.Stderr, "  mykb import-tabs [--urls-file FILE]")
 }
 
 func connect(host string) (*grpc.ClientConn, error) {
@@ -343,4 +348,128 @@ func getTerminalWidth() int {
 		return 80
 	}
 	return width
+}
+
+func runImportTabs(args []string) {
+	fs := flag.NewFlagSet("import-tabs", flag.ExitOnError)
+	urlsFile := fs.String("urls-file", "urls.txt", "file to append URLs to")
+	fs.Parse(args)
+
+	// Require TTY
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		fmt.Fprintln(os.Stderr, "error: import-tabs requires a terminal (TTY)")
+		os.Exit(1)
+	}
+
+	// Discover tabs
+	allTabs, profileNames, err := tabs.DiscoverTabs()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Load existing URLs for dedup
+	existing := loadURLSet(*urlsFile)
+
+	// Filter and dedup
+	var pickerTabs []tabs.Tab
+	filtered := 0
+	duplicates := 0
+	for _, t := range allTabs {
+		if tabs.ShouldFilter(t.URL) {
+			filtered++
+			continue
+		}
+		if existing[t.URL] {
+			duplicates++
+			continue
+		}
+		pickerTabs = append(pickerTabs, t)
+	}
+
+	if len(pickerTabs) == 0 {
+		fmt.Printf("No new URLs to import (%d tabs found, %d filtered, %d duplicates)\n",
+			len(allTabs), filtered, duplicates)
+		return
+	}
+
+	// Run TUI picker
+	stats := tabs.PickerStats{
+		Profiles:   len(profileNames),
+		Total:      len(allTabs),
+		Filtered:   filtered,
+		Duplicates: duplicates,
+	}
+	picker := tabs.NewPicker(pickerTabs, stats)
+	p := tea.NewProgram(picker, tea.WithAltScreen())
+	result, err := p.Run()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	final := result.(tabs.Picker)
+	if final.Cancelled() {
+		fmt.Println("cancelled")
+		return
+	}
+
+	selected := final.SelectedTabs()
+	if len(selected) == 0 {
+		fmt.Println("no URLs selected")
+		return
+	}
+
+	// Append to file
+	if err := appendURLs(*urlsFile, selected); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing %s: %v\n", *urlsFile, err)
+		os.Exit(1)
+	}
+	fmt.Printf("appended %d URLs to %s\n", len(selected), *urlsFile)
+}
+
+func loadURLSet(path string) map[string]bool {
+	set := make(map[string]bool)
+	f, err := os.Open(path)
+	if err != nil {
+		return set
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" {
+			set[line] = true
+		}
+	}
+	return set
+}
+
+func appendURLs(path string, selected []tabs.Tab) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err == nil && info.Size() > 0 {
+		rf, err := os.Open(path)
+		if err == nil {
+			buf := make([]byte, 1)
+			rf.Seek(-1, 2)
+			rf.Read(buf)
+			rf.Close()
+			if buf[0] != '\n' {
+				f.WriteString("\n")
+			}
+		}
+	}
+
+	for _, t := range selected {
+		if _, err := fmt.Fprintln(f, t.URL); err != nil {
+			return err
+		}
+	}
+	return nil
 }
