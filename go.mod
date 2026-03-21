@@ -12,6 +12,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/meilisearch/meilisearch-go v0.36.1
+	github.com/pierrec/lz4/v4 v4.1.26
 	github.com/qdrant/go-client v1.17.1
 	github.com/testcontainers/testcontainers-go v0.41.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.41.0
