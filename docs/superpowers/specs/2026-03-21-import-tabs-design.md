@@ -14,11 +14,11 @@ New `mykb import-tabs` subcommand that auto-discovers Firefox profiles on the cu
 mykb import-tabs [--urls-file FILE]
 ```
 
-- `--urls-file` defaults to `urls.txt` in the current directory
+- `--urls-file` defaults to `urls.txt` in the current directory (created if it doesn't exist)
 - Auto-detects Firefox profiles (Linux standard, Flatpak, Snap, macOS)
 - Reads session data from each profile
 - Filters obvious non-content URLs
-- Shows TUI picker for remaining URLs
+- Shows TUI picker for remaining URLs (requires TTY; exits with error if non-TTY)
 - Deduplicates against existing `urls.txt` entries
 - Appends selected URLs to `urls.txt`
 
@@ -31,9 +31,11 @@ Scans these paths:
 | Linux (standard) | `~/.mozilla/firefox/` |
 | Linux (Flatpak) | `~/.var/app/org.mozilla.firefox/config/mozilla/firefox/` |
 | Linux (Snap) | `~/snap/firefox/common/.mozilla/firefox/` |
-| macOS | `~/Library/Application Support/Firefox/Profiles/` |
+| macOS | `~/Library/Application Support/Firefox/` |
 
-For each location, parse `profiles.ini` to find profile directories, then read `sessionstore-backups/recovery.jsonlz4` (live session if Firefox running) or `previous.jsonlz4` (last session if not).
+For each location, parse `profiles.ini` to find profile directories. The `IsRelative` field in each `[Profile*]` section controls path resolution: when `1`, `Path` is relative to the directory containing `profiles.ini`; when `0`, `Path` is absolute.
+
+For each profile directory, try `sessionstore-backups/recovery.jsonlz4` first; fall back to `previous.jsonlz4` if it doesn't exist.
 
 ### mozLz4 Decompression
 
@@ -42,7 +44,7 @@ Firefox uses a custom LZ4 variant:
 - 4-byte little-endian: decompressed size
 - Remaining bytes: LZ4 block-compressed data
 
-Use `github.com/pierrec/lz4/v4` for decompression.
+Use `github.com/pierrec/lz4/v4` for decompression. Must use `lz4.UncompressBlock()` (block API), not the frame reader — mozLz4 is raw LZ4 block data, not LZ4 frame format.
 
 ### Session JSON Structure
 
@@ -97,6 +99,8 @@ Space: toggle  a: select all  n: deselect all  Enter: confirm  q: cancel
 | `internal/tabs/firefox.go` | Profile discovery, mozLz4 decompression, session JSON parsing |
 | `internal/tabs/filter.go` | URL filtering rules |
 | `internal/tabs/picker.go` | Bubbletea TUI model for checkbox list |
+| `internal/tabs/firefox_test.go` | Tests for profiles.ini parsing, mozLz4 decompression, session extraction |
+| `internal/tabs/filter_test.go` | Tests for each filter rule category |
 | `cmd/mykb/main.go` | Add `import-tabs` subcommand dispatch |
 | `go.mod` / `go.sum` | Add `github.com/pierrec/lz4/v4` |
 
