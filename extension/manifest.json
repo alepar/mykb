@@ -1,0 +1,31 @@
+{
+  "manifest_version": 2,
+  "name": "MyKB Ingest",
+  "version": "1.0",
+  "description": "Ingest the current page into MyKB",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "<all_urls>"
+  ],
+  "browser_action": {
+    "default_icon": {
+      "48": "icons/icon-48.png",
+      "96": "icons/icon-96.png"
+    },
+    "default_title": "Ingest into MyKB"
+  },
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "options_ui": {
+    "page": "options.html"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "mykb-ingest@alepar",
+      "strict_min_version": "109.0"
+    },
+    "gecko_android": {}
+  }
+}
