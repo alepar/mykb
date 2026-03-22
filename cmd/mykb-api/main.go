@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -79,6 +80,18 @@ func main() {
 	mykbv1.RegisterKBServiceServer(grpcServer, srv)
 	reflection.Register(grpcServer)
 
+	httpHandler := server.NewHTTPHandler(pg, w)
+	httpServer := &http.Server{
+		Addr:    ":" + cfg.HTTPPort,
+		Handler: httpHandler,
+	}
+	go func() {
+		log.Printf("HTTP API server listening on :%s", cfg.HTTPPort)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("http: %v", err)
+		}
+	}()
+
 	// Graceful shutdown
 	go func() {
 		sigCh := make(chan os.Signal, 1)
@@ -86,6 +99,7 @@ func main() {
 		<-sigCh
 		log.Println("shutting down...")
 		grpcServer.GracefulStop()
+		_ = httpServer.Shutdown(context.Background())
 		cancel()
 	}()
 
