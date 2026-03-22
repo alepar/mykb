@@ -30,13 +30,15 @@ Extract `urlHistory[0]` as URL and `title` as title for each tab across all devi
 
 Add `readSyncedTabs(profilePath string) ([]Tab, error)`:
 - Opens `<profilePath>/synced-tabs.db` with `database/sql` + `modernc.org/sqlite`
+- Use `file:<path>?mode=ro` URI to allow concurrent reads while Firefox holds WAL lock
 - Queries `SELECT record FROM tabs`
 - Parses JSON records, extracts tabs from all devices
 - Returns `[]Tab` slice
+- Non-fatal: if database doesn't exist or can't be opened, return empty slice (not all profiles have sync enabled)
 
 Update `DiscoverTabs()`:
 - Call `readSyncedTabs()` for each profile alongside `readSessionTabs()`
-- Dedup by URL across both sources (synced tabs may overlap with local session tabs)
+- Dedup by URL inside `DiscoverTabs()` using a `map[string]struct{}` — local session tabs take priority over synced tabs
 
 ### `go.mod`
 
