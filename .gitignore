@@ -2,3 +2,6 @@ data/
 .env
 /mykb
 .claude/
+k8s/secrets.yaml
+k8s/ghcr-secret.yaml
+k8s/postgres-secret.yaml

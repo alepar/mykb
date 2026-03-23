@@ -9,4 +9,5 @@ FROM alpine:3.21
 COPY --from=builder /mykb-api /mykb-api
 COPY migrations /migrations
 EXPOSE 9090
+EXPOSE 9091
 CMD ["/mykb-api"]
