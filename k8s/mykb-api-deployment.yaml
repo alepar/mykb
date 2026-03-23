@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mykb-api
+  namespace: mykb
+  labels:
+    app: mykb-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mykb-api
+  template:
+    metadata:
+      labels:
+        app: mykb-api
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: hass
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+        - name: mykb-api
+          image: ghcr.io/alepar/mykb:latest
+          ports:
+            - containerPort: 9090
+              name: grpc
+            - containerPort: 9091
+              name: http
+          env:
+            # postgres-secret values MUST come before POSTGRES_DSN (k8s var expansion order)
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_DB
+            - name: POSTGRES_DSN
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)?sslmode=disable"
+            - name: QDRANT_GRPC_HOST
+              value: "qdrant:6334"
+            - name: MEILISEARCH_HOST
+              value: "http://meilisearch:7700"
+            - name: MEILISEARCH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mykb-secrets
+                  key: MEILISEARCH_KEY
+            - name: VOYAGE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mykb-secrets
+                  key: VOYAGE_API_KEY
+            - name: CRAWL4AI_URL
+              value: "http://crawl4ai:11235"
+            - name: DATA_DIR
+              value: "/data/documents"
+          volumeMounts:
+            - name: mykb-data
+              mountPath: /data/documents
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "128m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          readinessProbe:
+            tcpSocket:
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 20
+      volumes:
+        - name: mykb-data
+          persistentVolumeClaim:
+            claimName: mykb-data
