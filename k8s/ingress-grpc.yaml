@@ -3,8 +3,6 @@ kind: Ingress
 metadata:
   name: mykb-ingress-grpc
   namespace: mykb
-  annotations:
-    traefik.ingress.kubernetes.io/service.serversscheme: h2c
 spec:
   rules:
     - host: mykb.k3s
