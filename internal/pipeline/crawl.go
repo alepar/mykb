@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -91,10 +92,38 @@ type crawlMetadata struct {
 	Title string `json:"title"`
 }
 
-// Crawl fetches the given URL via the Crawl4AI container and returns
+const (
+	crawlMaxRetries = 5
+	crawlBaseDelay  = 4 * time.Second
+)
+
+func (c *Crawler) Crawl(ctx context.Context, url string) (CrawlResult, error) {
+	var lastErr error
+	for attempt := 0; attempt <= crawlMaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := crawlBaseDelay * time.Duration(1<<(attempt-1))
+			log.Printf("crawl: retry %d/%d for %s after %v", attempt, crawlMaxRetries, url, delay)
+			select {
+			case <-ctx.Done():
+				return CrawlResult{}, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		result, err := c.crawlOnce(ctx, url)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return result, nil
+	}
+	return CrawlResult{}, fmt.Errorf("crawl failed after %d retries: %w", crawlMaxRetries, lastErr)
+}
+
+// crawlOnce fetches the given URL via the Crawl4AI container and returns
 // the page content as markdown. It uses PruningContentFilter to produce
 // fit_markdown (filtered content without navigation/boilerplate).
-func (c *Crawler) Crawl(ctx context.Context, url string) (CrawlResult, error) {
+func (c *Crawler) crawlOnce(ctx context.Context, url string) (CrawlResult, error) {
 	if isRedditThread(url) {
 		return c.crawlReddit(ctx, url)
 	}
