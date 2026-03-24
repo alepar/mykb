@@ -15,6 +15,7 @@ import (
 	mykbv1 "mykb/gen/mykb/v1"
 	"mykb/internal/config"
 	"mykb/internal/pipeline"
+	"mykb/internal/ratelimit"
 	"mykb/internal/search"
 	"mykb/internal/server"
 	"mykb/internal/storage"
@@ -59,6 +60,11 @@ func main() {
 	// Pipeline components
 	crawler := pipeline.NewCrawler(cfg.Crawl4AIURL)
 	embedder := pipeline.NewEmbedder(cfg.VoyageAPIKey, cfg.VoyageEmbedModel, cfg.VoyageEmbedDimension)
+	embedLimiter := ratelimit.NewAdaptiveLimiter(ratelimit.Config{
+		StartingRate: 0.4,
+	})
+	defer embedLimiter.Close()
+	embedder.SetLimiter(embedLimiter)
 	indexer := pipeline.NewIndexer(qdrant, meili)
 
 	// Search
