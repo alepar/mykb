@@ -22,13 +22,19 @@ spec:
           image: unclecode/crawl4ai:latest
           ports:
             - containerPort: 11235
+          env:
+            - name: MAX_CONCURRENT_TASKS
+              value: "5"
           resources:
             requests:
-              memory: "256Mi"
+              memory: "1Gi"
               cpu: "250m"
             limits:
-              memory: "1Gi"
+              memory: "4Gi"
               cpu: "1000m"
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
           readinessProbe:
             httpGet:
               path: /health
@@ -41,3 +47,8 @@ spec:
               port: 11235
             initialDelaySeconds: 30
             periodSeconds: 20
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
