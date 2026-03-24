@@ -13,9 +13,9 @@ Add parallel document ingestion to mykb-api: a worker pool (default 8 concurrent
 Parallelism is at the document level, not within a document. Each document's chunks are still embedded together in a single contextualized API call — this preserves embedding quality.
 
 **Changes:**
-- `internal/worker/worker.go`: `Start()` launches N goroutines instead of 1. Each runs the existing `processDocument()` loop.
+- `internal/worker/worker.go`: `Start()` performs startup resume (pending documents) once, then launches N goroutines. Each goroutine reads from the shared notify channel and runs `processDocument()`. The startup resume must happen before spawning the pool to avoid multiple goroutines independently calling `GetPendingDocuments()` and double-processing the same documents.
 - `internal/config/config.go`: New `WORKER_CONCURRENCY` env var, default 8.
-- The existing notify channel and retry logic remain unchanged.
+- Increase notify channel capacity from 64 to 8192 to support large batch submissions without dropping. For the `IngestURLs` RPC, use blocking sends to ensure no URLs are lost (the current non-blocking send with drop-and-retry-on-restart is fine for individual `IngestURL` calls, but batch ingestion must guarantee delivery).
 
 ## Adaptive Rate Limiting (Voyage AI)
 
@@ -36,6 +36,8 @@ Port the `AdaptiveLimiter` from `~/AleCode/meilisearch-movies/backend/internal/r
 - Base delay: 4 seconds (sequence: 4s, 8s, 16s, 32s, 64s)
 - On failure (error, empty response, size mismatch): call `limiter.ReportFailure()` → rate drops to ceiling × 0.9
 - On success: call `limiter.ReportSuccess()` → may trigger upward probe
+
+**Interaction with document-level retries:** Stage-level retries (embed, crawl) are internal to the pipeline call. If all 5 stage retries are exhausted, the error propagates up to the existing document-level retry mechanism in `handleError()` (which sets `retry_count`, `next_retry_at`, up to `MaxRetries=5`). The two retry layers are independent: stage retries handle transient API failures within a single attempt, document retries handle persistent failures across attempts.
 
 **Integration:** The limiter is created in `cmd/mykb-api/main.go` at startup and passed into the pipeline. Each worker calls `limiter.Acquire()` before calling the Voyage API in `embed.go`.
 
@@ -86,8 +88,15 @@ message IngestURLsProgress {
 6. Close stream when all documents are done/errored/skipped
 
 **Progress reporting mechanism:**
-- The worker currently reports progress via a callback. Extend this so the worker publishes stage transitions to a shared progress bus (channel or callback registry keyed by document ID).
-- The `IngestURLs` handler subscribes to progress for its batch of document IDs and forwards updates to the gRPC stream.
+
+The worker needs a way to report stage transitions back to the `IngestURLs` handler. Design:
+
+- **Progress bus:** A `sync.Map` of `documentID → chan ProgressEvent` managed by the worker. When a handler wants to observe a document, it registers a channel. The worker sends stage events to the channel if one is registered. If no channel is registered (e.g., single `IngestURL` calls or documents with no listener), events are silently dropped.
+- **Lifecycle:** The `IngestURLs` handler registers channels for all its document IDs before queuing them. When a document reaches a terminal state (done/error/skipped), the worker closes the channel and removes it from the map. The handler reads from all channels (via a goroutine per document or a multiplexing select) and forwards events to the gRPC stream.
+- **Client disconnect:** If the gRPC stream context is cancelled (client disconnects), the handler stops reading from channels. The worker still processes documents to completion — progress events are dropped since nobody is reading. No leak: channels are cleaned up on terminal state regardless of whether the handler is reading.
+- **`IngestURLsProgress.current`:** Server-computed running counter of documents that have reached a terminal state (done, error, or skipped). Increments only on terminal events, not on intermediate stage transitions.
+
+**gRPC keepalive:** The stream for a large batch (3,724 URLs) may stay open for 2-3 hours. The stream is not idle — progress messages flow continuously — so default gRPC keepalive settings should be sufficient. If issues arise, configure server-side keepalive (e.g., `MaxConnectionAge`) and client-side keepalive ping interval. The Traefik ingress uses `proxy_read_timeout` defaults which should be fine since the stream is active.
 
 ## New `mykb import-urls` CLI Command
 
