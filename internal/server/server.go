@@ -91,6 +91,97 @@ func (s *Server) IngestURL(req *mykbv1.IngestURLRequest, stream grpc.ServerStrea
 	return nil
 }
 
+// IngestURLs inserts documents for the given URLs and streams batch progress
+// updates as the worker processes them through the ingestion pipeline.
+func (s *Server) IngestURLs(req *mykbv1.IngestURLsRequest, stream grpc.ServerStreamingServer[mykbv1.IngestURLsProgress]) error {
+	ctx := stream.Context()
+	urls := req.GetUrls()
+	total := int32(len(urls))
+
+	if total == 0 {
+		return status.Errorf(codes.InvalidArgument, "no URLs provided")
+	}
+
+	type docInfo struct {
+		id  string
+		url string
+	}
+	var batchDocs []docInfo
+	var current int32
+
+	progressChans := make([]chan worker.ProgressUpdate, 0, len(urls))
+
+	for _, url := range urls {
+		if req.GetForce() {
+			existing, err := s.pg.GetDocumentByURL(ctx, url)
+			if err == nil && existing.ID != "" {
+				if _, err := s.DeleteDocument(ctx, &mykbv1.DeleteDocumentRequest{Id: existing.ID}); err != nil {
+					log.Printf("server: force delete of existing document %s failed: %v", existing.ID, err)
+				}
+			}
+		}
+
+		doc, err := s.pg.InsertDocument(ctx, url)
+		if err != nil {
+			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+				current++
+				if err := stream.Send(&mykbv1.IngestURLsProgress{
+					Current: current,
+					Total:   total,
+					Url:     url,
+					Stage:   "skipped",
+				}); err != nil {
+					return err
+				}
+				continue
+			}
+			return status.Errorf(codes.Internal, "insert document for %s: %v", url, err)
+		}
+
+		ch := make(chan worker.ProgressUpdate, 32)
+		progressChans = append(progressChans, ch)
+		batchDocs = append(batchDocs, docInfo{id: doc.ID, url: url})
+	}
+
+	// Queue all documents using blocking sends.
+	for i, doc := range batchDocs {
+		if err := s.worker.NotifyBlocking(ctx, doc.id, progressChans[i]); err != nil {
+			return status.Errorf(codes.Internal, "queue document %s: %v", doc.url, err)
+		}
+	}
+
+	// Stream progress from all documents sequentially.
+	for i, ch := range progressChans {
+		doc := batchDocs[i]
+		for update := range ch {
+			stage := strings.ToLower(update.Status)
+			if stage == "" {
+				stage = "processing"
+			}
+
+			errMsg := ""
+			if stage == "error" {
+				errMsg = update.Message
+				current++
+			} else if stage == "done" {
+				current++
+			}
+
+			if err := stream.Send(&mykbv1.IngestURLsProgress{
+				Current: current,
+				Total:   total,
+				Url:     doc.url,
+				Stage:   stage,
+				Error:   errMsg,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 // Query performs a hybrid search and returns matching chunk results.
 func (s *Server) Query(ctx context.Context, req *mykbv1.QueryRequest) (*mykbv1.QueryResponse, error) {
 	params := search.SearchParams{
