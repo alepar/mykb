@@ -126,7 +126,7 @@ func (e *Embedder) embedWithRetry(ctx context.Context, inputs [][]string, inputT
 
 // maxContextTokens is the conservative limit for the contextualized embedding
 // API's context window (actual limit is 32K, we leave headroom).
-const maxContextTokens = 28000
+const maxContextTokens = 20000
 
 // splitChunkBatches splits chunks into sub-batches where each sub-batch's
 // estimated total tokens stays under maxContextTokens. This handles documents
