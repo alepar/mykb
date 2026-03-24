@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"mykb/internal/ratelimit"
 )
 
 const voyageBaseURL = "https://api.voyageai.com/v1"
@@ -22,6 +24,7 @@ type Embedder struct {
 	dimension  int
 	httpClient *http.Client
 	baseURL    string // overridable for tests
+	limiter    *ratelimit.AdaptiveLimiter
 }
 
 // NewEmbedder creates an Embedder that calls Voyage AI with the given model.
@@ -35,6 +38,10 @@ func NewEmbedder(apiKey, model string, dimension int) *Embedder {
 		},
 		baseURL: voyageBaseURL,
 	}
+}
+
+func (e *Embedder) SetLimiter(l *ratelimit.AdaptiveLimiter) {
+	e.limiter = l
 }
 
 // --- request/response types for contextualized embeddings ---
@@ -64,6 +71,59 @@ type ctxEmbedItem struct {
 	Index     int       `json:"index"`
 }
 
+const (
+	embedMaxRetries = 5
+	embedBaseDelay  = 4 * time.Second
+)
+
+func (e *Embedder) embedWithRetry(ctx context.Context, inputs [][]string, inputType string, expectedCount int) (*ctxEmbedResponse, error) {
+	var lastErr error
+	for attempt := 0; attempt <= embedMaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := embedBaseDelay * time.Duration(1<<(attempt-1))
+			log.Printf("embed: retry %d/%d after %v", attempt, embedMaxRetries, delay)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		if e.limiter != nil {
+			e.limiter.Acquire()
+		}
+
+		resp, err := e.postContextualized(ctx, inputs, inputType)
+		if err != nil {
+			lastErr = err
+			if e.limiter != nil {
+				e.limiter.ReportFailure()
+			}
+			continue
+		}
+
+		// Validate response
+		if len(resp.Data) == 0 || len(resp.Data[0].Data) != expectedCount {
+			got := 0
+			if len(resp.Data) > 0 {
+				got = len(resp.Data[0].Data)
+			}
+			lastErr = fmt.Errorf("embedding response size mismatch: got %d, expected %d",
+				got, expectedCount)
+			if e.limiter != nil {
+				e.limiter.ReportFailure()
+			}
+			continue
+		}
+
+		if e.limiter != nil {
+			e.limiter.ReportSuccess()
+		}
+		return resp, nil
+	}
+	return nil, fmt.Errorf("embed failed after %d retries: %w", embedMaxRetries, lastErr)
+}
+
 // EmbedChunks computes contextualized embeddings for all chunks of a single
 // document. Chunks are sent together so the model encodes each chunk with
 // awareness of its siblings. Returns one vector per chunk in order.
@@ -72,13 +132,9 @@ func (e *Embedder) EmbedChunks(ctx context.Context, chunks []string) ([][]float3
 		return nil, nil
 	}
 
-	resp, err := e.postContextualized(ctx, [][]string{chunks}, "document")
+	resp, err := e.embedWithRetry(ctx, [][]string{chunks}, "document", len(chunks))
 	if err != nil {
 		return nil, fmt.Errorf("embed chunks: %w", err)
-	}
-
-	if len(resp.Data) == 0 || len(resp.Data[0].Data) == 0 {
-		return nil, fmt.Errorf("embed chunks: empty response")
 	}
 
 	log.Printf("embed [%s]: chunks=%d tokens=%d dims=%d",
