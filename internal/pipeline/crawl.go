@@ -121,6 +121,160 @@ func (c *Crawler) Crawl(ctx context.Context, url string) (CrawlResult, error) {
 	return CrawlResult{}, fmt.Errorf("crawl failed after %d retries: %w", crawlMaxRetries, lastErr)
 }
 
+// IsRedditURL returns true if the URL should be crawled via the Reddit path.
+func IsRedditURL(url string) bool {
+	return isRedditThread(url)
+}
+
+// CrawlBatch sends multiple URLs in a single /crawl POST request.
+// Returns successful results keyed by URL and per-URL errors keyed by URL.
+// Retry with backoff applies to transport-level failures only (HTTP errors, timeouts).
+// Per-URL failures in the response are NOT retried — they're returned as errors.
+func (c *Crawler) CrawlBatch(ctx context.Context, urls []string) (map[string]CrawlResult, map[string]error) {
+	if len(urls) == 0 {
+		return nil, nil
+	}
+
+	// Longer timeout for batch: 2 min per URL, capped at 10 min.
+	timeout := time.Duration(len(urls)) * 2 * time.Minute
+	if timeout > 10*time.Minute {
+		timeout = 10 * time.Minute
+	}
+	batchClient := &http.Client{Timeout: timeout}
+
+	body, err := json.Marshal(crawlRequest{
+		URLs:     urls,
+		Priority: 10,
+		CrawlerConfig: &crawlCrawlerConfig{
+			Type: "CrawlerRunConfig",
+			Params: crawlCrawlerConfigParams{
+				MarkdownGenerator: &crawlMarkdownGenerator{
+					Type: "DefaultMarkdownGenerator",
+					Params: crawlMarkdownGeneratorParams{
+						ContentFilter: &crawlContentFilter{
+							Type:   "PruningContentFilter",
+							Params: crawlContentFilterParams{Threshold: 0.48},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		errs := make(map[string]error, len(urls))
+		for _, u := range urls {
+			errs[u] = err
+		}
+		return nil, errs
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= crawlMaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := crawlBaseDelay * time.Duration(1<<(attempt-1))
+			log.Printf("crawl-batch: retry %d/%d for %d urls after %v", attempt, crawlMaxRetries, len(urls), delay)
+			select {
+			case <-ctx.Done():
+				errs := make(map[string]error, len(urls))
+				for _, u := range urls {
+					errs[u] = ctx.Err()
+				}
+				return nil, errs
+			case <-time.After(delay):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/crawl", bytes.NewReader(body))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := batchClient.Do(req)
+		if err != nil {
+			lastErr = err
+			log.Printf("crawl-batch: attempt %d failed: %v", attempt, err)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("crawl4ai returned status %d: %s", resp.StatusCode, string(respBody))
+			log.Printf("crawl-batch: attempt %d failed: %v", attempt, lastErr)
+			continue
+		}
+
+		var cr crawlResponse
+		if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("decode crawl response: %w", err)
+			log.Printf("crawl-batch: attempt %d failed: %v", attempt, lastErr)
+			continue
+		}
+		resp.Body.Close()
+
+		return c.parseBatchResults(urls, &cr)
+	}
+
+	errs := make(map[string]error, len(urls))
+	for _, u := range urls {
+		errs[u] = fmt.Errorf("crawl-batch failed after %d retries: %w", crawlMaxRetries, lastErr)
+	}
+	return nil, errs
+}
+
+// parseBatchResults converts a crawlResponse into per-URL results and errors.
+func (c *Crawler) parseBatchResults(urls []string, cr *crawlResponse) (map[string]CrawlResult, map[string]error) {
+	results := make(map[string]CrawlResult)
+	errs := make(map[string]error)
+
+	responseByURL := make(map[string]crawlResult, len(cr.Results))
+	for _, r := range cr.Results {
+		responseByURL[r.URL] = r
+	}
+
+	for _, url := range urls {
+		r, ok := responseByURL[url]
+		if !ok {
+			errs[url] = fmt.Errorf("crawl4ai returned no result for URL")
+			continue
+		}
+		if !r.Success {
+			errs[url] = fmt.Errorf("crawl4ai failed: %s", r.Error)
+			continue
+		}
+
+		rawMarkdown := ""
+		fitMarkdown := ""
+		if r.Markdown != nil {
+			rawMarkdown = r.Markdown.RawMarkdown
+			fitMarkdown = r.Markdown.FitMarkdown
+		}
+
+		markdown := fitMarkdown
+		if markdown == "" {
+			markdown = rawMarkdown
+		}
+
+		title := ""
+		if r.Metadata != nil && r.Metadata.Title != "" {
+			title = r.Metadata.Title
+		} else {
+			title = extractTitle(markdown)
+		}
+
+		results[url] = CrawlResult{
+			Markdown:    markdown,
+			RawMarkdown: rawMarkdown,
+			Title:       title,
+		}
+	}
+
+	return results, errs
+}
+
 // crawlOnce fetches the given URL via the Crawl4AI container and returns
 // the page content as markdown. It uses PruningContentFilter to produce
 // fit_markdown (filtered content without navigation/boilerplate).
