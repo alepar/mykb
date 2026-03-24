@@ -35,6 +35,8 @@ func main() {
 		runQuery(os.Args[2:])
 	case "import-tabs":
 		runImportTabs(os.Args[2:])
+	case "import-urls":
+		runImportURLs(os.Args[2:])
 	default:
 		// Default to query: "mykb <query>" is shorthand for "mykb query <query>"
 		runQuery(os.Args[1:])
@@ -47,6 +49,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  mykb query <query> [--host HOST] [--top-k N] [--vector-depth N] [--fts-depth N] [--rerank-depth N] [--no-merge]")
 	fmt.Fprintln(os.Stderr, "  mykb ingest <url> [--quiet] [--force] [--host HOST]")
 	fmt.Fprintln(os.Stderr, "  mykb import-tabs [--urls-file FILE]")
+	fmt.Fprintln(os.Stderr, "  mykb import-urls --file FILE [--force] [--quiet] [--host HOST]")
 }
 
 func connect(host string) (*grpc.ClientConn, error) {
@@ -443,6 +446,116 @@ func loadURLSet(path string) map[string]bool {
 		}
 	}
 	return set
+}
+
+func runImportURLs(args []string) {
+	fs := flag.NewFlagSet("import-urls", flag.ExitOnError)
+	file := fs.String("file", "", "path to URL file (one URL per line)")
+	force := fs.Bool("force", false, "re-ingest even if URL already exists")
+	quiet := fs.Bool("quiet", false, "suppress progress output")
+	host := fs.String("host", "", "server address (default: from config)")
+	fs.StringVar(file, "f", "", "path to URL file (short for --file)")
+	fs.Parse(args)
+
+	if *file == "" {
+		fmt.Fprintln(os.Stderr, "Usage: mykb import-urls --file FILE [--force] [--quiet] [--host HOST]")
+		os.Exit(1)
+	}
+
+	urls, err := readURLFile(*file)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", *file, err)
+		os.Exit(1)
+	}
+
+	if len(urls) == 0 {
+		fmt.Println("no URLs found in file")
+		return
+	}
+
+	cfg := cliconfig.Load("")
+	if *host != "" {
+		cfg.Host = *host
+	}
+
+	conn, err := connect(cfg.Host)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	client := mykbv1.NewKBServiceClient(conn)
+	stream, err := client.IngestURLs(context.Background(), &mykbv1.IngestURLsRequest{
+		Urls:  urls,
+		Force: *force,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	var done, errors, skipped int
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
+			os.Exit(1)
+		}
+
+		switch msg.GetStage() {
+		case "done":
+			done++
+		case "error":
+			errors++
+		case "skipped":
+			skipped++
+		}
+
+		if !*quiet {
+			fmt.Fprintf(os.Stderr, "\r[%d/%d] %s %s | done: %d | skipped: %d | errors: %d",
+				msg.GetCurrent(), msg.GetTotal(), msg.GetStage(), truncateURL(msg.GetUrl(), 60),
+				done, skipped, errors)
+		}
+	}
+
+	if !*quiet {
+		fmt.Fprintln(os.Stderr)
+	}
+	fmt.Printf("done: %d, skipped: %d, errors: %d (total: %d)\n", done, skipped, errors, len(urls))
+
+	if errors > 0 {
+		os.Exit(1)
+	}
+}
+
+func readURLFile(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var urls []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		urls = append(urls, line)
+	}
+	return urls, scanner.Err()
+}
+
+func truncateURL(url string, maxLen int) string {
+	if len(url) <= maxLen {
+		return url
+	}
+	return url[:maxLen-3] + "..."
 }
 
 func appendURLs(path string, selected []tabs.Tab) error {
