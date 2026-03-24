@@ -124,27 +124,70 @@ func (e *Embedder) embedWithRetry(ctx context.Context, inputs [][]string, inputT
 	return nil, fmt.Errorf("embed failed after %d retries: %w", embedMaxRetries, lastErr)
 }
 
+// maxContextTokens is the conservative limit for the contextualized embedding
+// API's context window (actual limit is 32K, we leave headroom).
+const maxContextTokens = 28000
+
+// splitChunkBatches splits chunks into sub-batches where each sub-batch's
+// estimated total tokens stays under maxContextTokens. This handles documents
+// whose total content exceeds the 32K context window.
+func splitChunkBatches(chunks []string) [][]string {
+	var batches [][]string
+	var current []string
+	currentTokens := 0
+
+	for _, chunk := range chunks {
+		tokens := estimateTokens(chunk)
+		if len(current) > 0 && currentTokens+tokens > maxContextTokens {
+			batches = append(batches, current)
+			current = nil
+			currentTokens = 0
+		}
+		current = append(current, chunk)
+		currentTokens += tokens
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
+}
+
 // EmbedChunks computes contextualized embeddings for all chunks of a single
 // document. Chunks are sent together so the model encodes each chunk with
-// awareness of its siblings. Returns one vector per chunk in order.
+// awareness of its siblings. If the total tokens exceed the context window,
+// chunks are split into sub-batches that each fit. Returns one vector per
+// chunk in order.
 func (e *Embedder) EmbedChunks(ctx context.Context, chunks []string) ([][]float32, error) {
 	if len(chunks) == 0 {
 		return nil, nil
 	}
 
-	resp, err := e.embedWithRetry(ctx, [][]string{chunks}, "document", len(chunks))
-	if err != nil {
-		return nil, fmt.Errorf("embed chunks: %w", err)
+	batches := splitChunkBatches(chunks)
+
+	if len(batches) > 1 {
+		log.Printf("embed [%s]: splitting %d chunks into %d sub-batches (exceeds %d token limit)",
+			e.model, len(chunks), len(batches), maxContextTokens)
 	}
 
-	log.Printf("embed [%s]: chunks=%d tokens=%d dims=%d",
-		e.model, len(chunks), resp.Usage.TotalTokens, len(resp.Data[0].Data[0].Embedding))
+	allEmbeddings := make([][]float32, len(chunks))
+	offset := 0
 
-	embeddings := make([][]float32, len(resp.Data[0].Data))
-	for _, item := range resp.Data[0].Data {
-		embeddings[item.Index] = item.Embedding
+	for _, batch := range batches {
+		resp, err := e.embedWithRetry(ctx, [][]string{batch}, "document", len(batch))
+		if err != nil {
+			return nil, fmt.Errorf("embed chunks: %w", err)
+		}
+
+		log.Printf("embed [%s]: chunks=%d tokens=%d dims=%d",
+			e.model, len(batch), resp.Usage.TotalTokens, len(resp.Data[0].Data[0].Embedding))
+
+		for _, item := range resp.Data[0].Data {
+			allEmbeddings[offset+item.Index] = item.Embedding
+		}
+		offset += len(batch)
 	}
-	return embeddings, nil
+
+	return allEmbeddings, nil
 }
 
 // EmbedQuery computes an embedding for a single query string.
