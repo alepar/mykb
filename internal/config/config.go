@@ -1,6 +1,9 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strconv"
+)
 
 type Config struct {
 	PostgresDSN     string
@@ -23,6 +26,7 @@ type Config struct {
 	ChunkMaxTokens    int
 	EmbedBatchSize    int
 	MaxRetries        int
+	WorkerConcurrency int
 
 	// Search defaults
 	DefaultTopK        int
@@ -59,6 +63,7 @@ func Load() *Config {
 		ChunkMaxTokens:    1500,
 		EmbedBatchSize:    128,
 		MaxRetries:        5,
+		WorkerConcurrency: envOrInt("WORKER_CONCURRENCY", 8),
 
 		DefaultTopK:        10,
 		DefaultVectorDepth: 100,
@@ -77,6 +82,16 @@ func Load() *Config {
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envOrInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		n, err := strconv.Atoi(v)
+		if err == nil {
+			return n
+		}
 	}
 	return fallback
 }
