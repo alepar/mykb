@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"mykb/internal/config"
 	"mykb/internal/pipeline"
@@ -106,44 +107,21 @@ func (w *Worker) Start(ctx context.Context) {
 		}
 	}
 
-	// Launch worker pool.
-	concurrency := w.cfg.WorkerConcurrency
-	if concurrency < 1 {
-		concurrency = 1
+	// Launch batch coordinator.
+	batchSize := w.cfg.WorkerConcurrency
+	if batchSize < 1 {
+		batchSize = 1
 	}
-	log.Printf("worker: starting pool with %d workers", concurrency)
+	log.Printf("worker: starting batch coordinator (batch size %d)", batchSize)
 
-	var wg sync.WaitGroup
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case item := <-w.notify:
-					err := w.ProcessDocument(ctx, item.documentID, item.progress)
-					if item.progress != nil {
-						// Send terminal error status if processing failed, so
-						// IngestURLs handler can count errors correctly.
-						if err != nil {
-							sendProgress(item.progress, ProgressUpdate{
-								DocumentID: item.documentID,
-								Status:     "ERROR",
-								Message:    err.Error(),
-							})
-						}
-						close(item.progress)
-					}
-					if err != nil {
-						log.Printf("worker: error processing document %s: %v", item.documentID, err)
-					}
-				}
-			}
-		}()
+	for {
+		batch := w.pullBatch(ctx, batchSize)
+		if len(batch) == 0 {
+			return // context cancelled
+		}
+
+		w.processBatch(ctx, batch)
 	}
-	wg.Wait()
 }
 
 // ProcessDocument fetches a document from Postgres and runs it through the
@@ -205,6 +183,42 @@ func (w *Worker) doCrawl(ctx context.Context, doc *storage.Document, progress ch
 	result, err := w.crawler.Crawl(ctx, doc.URL)
 	if err != nil {
 		return fmt.Errorf("crawl: %w", err)
+	}
+
+	if err := w.fs.WriteDocument(doc.ID, []byte(result.Markdown)); err != nil {
+		return fmt.Errorf("write document: %w", err)
+	}
+
+	if result.RawMarkdown != "" {
+		if err := w.fs.WriteDocumentRaw(doc.ID, []byte(result.RawMarkdown)); err != nil {
+			return fmt.Errorf("write raw document: %w", err)
+		}
+	}
+
+	if result.Title != "" {
+		if err := w.pg.SetDocumentTitle(ctx, doc.ID, result.Title); err != nil {
+			return fmt.Errorf("set title: %w", err)
+		}
+	}
+
+	if err := w.pg.SetDocumentCrawledAt(ctx, doc.ID); err != nil {
+		return fmt.Errorf("set crawled_at: %w", err)
+	}
+
+	sendProgress(progress, ProgressUpdate{
+		DocumentID: doc.ID,
+		Status:     "CRAWLING",
+		Message:    "Crawl complete",
+	})
+
+	return nil
+}
+
+// saveCrawlResult persists a crawl result (markdown, title, crawled_at) and sends progress.
+// Used by the batch coordinator after CrawlBatch returns.
+func (w *Worker) saveCrawlResult(ctx context.Context, doc *storage.Document, result pipeline.CrawlResult, progress chan<- ProgressUpdate) error {
+	if err := w.pg.UpdateDocumentStatus(ctx, doc.ID, "CRAWLING"); err != nil {
+		return fmt.Errorf("set status CRAWLING: %w", err)
 	}
 
 	if err := w.fs.WriteDocument(doc.ID, []byte(result.Markdown)); err != nil {
@@ -449,6 +463,195 @@ func (w *Worker) handleError(ctx context.Context, docID string, err error) error
 		log.Printf("worker: failed to set error on document %s: %v", docID, setErr)
 	}
 	return err
+}
+
+// pullBatch drains up to maxSize items from the notify channel.
+// Blocks until at least one item is available, then collects more with a short timeout.
+func (w *Worker) pullBatch(ctx context.Context, maxSize int) []workItem {
+	var batch []workItem
+
+	// Block until first item or context cancellation.
+	select {
+	case <-ctx.Done():
+		return nil
+	case item := <-w.notify:
+		batch = append(batch, item)
+	}
+
+	// Collect more items with a short timeout.
+	timeout := time.After(100 * time.Millisecond)
+	for len(batch) < maxSize {
+		select {
+		case item := <-w.notify:
+			batch = append(batch, item)
+		case <-timeout:
+			return batch
+		case <-ctx.Done():
+			return batch
+		}
+	}
+
+	return batch
+}
+
+// processBatch crawls a batch of URLs together, then chunks and fans out embed+index.
+func (w *Worker) processBatch(ctx context.Context, batch []workItem) {
+	// Load documents from postgres.
+	type batchDoc struct {
+		item workItem
+		doc  storage.Document
+	}
+	var docs []batchDoc
+	for _, item := range batch {
+		doc, err := w.pg.GetDocument(ctx, item.documentID)
+		if err != nil {
+			log.Printf("worker: failed to get document %s: %v", item.documentID, err)
+			if item.progress != nil {
+				sendProgress(item.progress, ProgressUpdate{
+					DocumentID: item.documentID, Status: "ERROR", Message: err.Error(),
+				})
+				close(item.progress)
+			}
+			continue
+		}
+		if doc.Error != nil {
+			if err := w.pg.ClearDocumentError(ctx, doc.ID); err != nil {
+				log.Printf("worker: failed to clear error on document %s: %v", doc.ID, err)
+			}
+		}
+		docs = append(docs, batchDoc{item: item, doc: doc})
+	}
+
+	if len(docs) == 0 {
+		return
+	}
+
+	// Separate Reddit URLs from regular URLs.
+	var regularDocs []batchDoc
+	var redditDocs []batchDoc
+	for _, bd := range docs {
+		if pipeline.IsRedditURL(bd.doc.URL) {
+			redditDocs = append(redditDocs, bd)
+		} else {
+			regularDocs = append(regularDocs, bd)
+		}
+	}
+
+	// Crawl regular URLs in batch, Reddit URLs individually — all concurrently.
+	crawlResults := make(map[string]pipeline.CrawlResult)
+	crawlErrors := make(map[string]error)
+	var crawlWg sync.WaitGroup
+
+	if len(regularDocs) > 0 {
+		crawlWg.Add(1)
+		go func() {
+			defer crawlWg.Done()
+			urls := make([]string, len(regularDocs))
+			for i, bd := range regularDocs {
+				urls[i] = bd.doc.URL
+			}
+			log.Printf("worker: batch crawling %d URLs", len(urls))
+			results, errs := w.crawler.CrawlBatch(ctx, urls)
+			for url, result := range results {
+				crawlResults[url] = result
+			}
+			for url, err := range errs {
+				crawlErrors[url] = err
+			}
+		}()
+	}
+
+	for _, bd := range redditDocs {
+		crawlWg.Add(1)
+		go func(bd batchDoc) {
+			defer crawlWg.Done()
+			result, err := w.crawler.Crawl(ctx, bd.doc.URL)
+			if err != nil {
+				crawlErrors[bd.doc.URL] = err
+			} else {
+				crawlResults[bd.doc.URL] = result
+			}
+		}(bd)
+	}
+
+	crawlWg.Wait()
+
+	// Process crawl results: save + chunk for successes, handleError for failures.
+	var embedDocs []batchDoc
+	for i := range docs {
+		bd := &docs[i]
+		url := bd.doc.URL
+
+		if crawlErr, failed := crawlErrors[url]; failed {
+			w.handleError(ctx, bd.doc.ID, fmt.Errorf("crawl: %w", crawlErr))
+			if bd.item.progress != nil {
+				sendProgress(bd.item.progress, ProgressUpdate{
+					DocumentID: bd.doc.ID, Status: "ERROR", Message: crawlErr.Error(),
+				})
+				close(bd.item.progress)
+			}
+			log.Printf("worker: crawl failed for %s: %v", url, crawlErr)
+			continue
+		}
+
+		result := crawlResults[url]
+		if err := w.saveCrawlResult(ctx, &bd.doc, result, bd.item.progress); err != nil {
+			w.handleError(ctx, bd.doc.ID, err)
+			if bd.item.progress != nil {
+				sendProgress(bd.item.progress, ProgressUpdate{
+					DocumentID: bd.doc.ID, Status: "ERROR", Message: err.Error(),
+				})
+				close(bd.item.progress)
+			}
+			log.Printf("worker: save crawl result failed for %s: %v", url, err)
+			continue
+		}
+
+		if err := w.doChunk(ctx, &bd.doc, bd.item.progress); err != nil {
+			w.handleError(ctx, bd.doc.ID, err)
+			if bd.item.progress != nil {
+				sendProgress(bd.item.progress, ProgressUpdate{
+					DocumentID: bd.doc.ID, Status: "ERROR", Message: err.Error(),
+				})
+				close(bd.item.progress)
+			}
+			log.Printf("worker: chunk failed for %s: %v", url, err)
+			continue
+		}
+
+		embedDocs = append(embedDocs, *bd)
+	}
+
+	// Fan out embed + index into goroutines (rate limited per-doc).
+	var embedWg sync.WaitGroup
+	for _, bd := range embedDocs {
+		embedWg.Add(1)
+		go func(bd batchDoc) {
+			defer embedWg.Done()
+			vectors := make(map[string][]float32)
+
+			var docErr error
+			if err := w.doEmbed(ctx, &bd.doc, bd.item.progress, vectors); err != nil {
+				docErr = err
+			} else if err := w.doIndex(ctx, &bd.doc, bd.item.progress, vectors); err != nil {
+				docErr = err
+			}
+
+			if bd.item.progress != nil {
+				if docErr != nil {
+					sendProgress(bd.item.progress, ProgressUpdate{
+						DocumentID: bd.doc.ID, Status: "ERROR", Message: docErr.Error(),
+					})
+				}
+				close(bd.item.progress)
+			}
+			if docErr != nil {
+				w.handleError(ctx, bd.doc.ID, docErr)
+				log.Printf("worker: embed/index failed for %s: %v", bd.doc.URL, docErr)
+			}
+		}(bd)
+	}
+	embedWg.Wait()
 }
 
 // sendProgress sends an update on the channel if it is non-nil.
