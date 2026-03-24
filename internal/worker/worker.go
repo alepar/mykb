@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 
 	"mykb/internal/config"
 	"mykb/internal/pipeline"
@@ -53,7 +54,7 @@ func NewWorker(
 		embedder: embedder,
 		indexer: indexer,
 		cfg:     cfg,
-		notify:  make(chan workItem, 64),
+		notify:  make(chan workItem, 8192),
 	}
 }
 
@@ -79,11 +80,19 @@ func (w *Worker) NotifyWithProgress(documentID string, progress chan<- ProgressU
 	}
 }
 
-// Start runs the background processing loop. On startup it resumes any
-// interrupted documents, then waits for new work items on the notify channel.
-// It processes documents sequentially.
+// NotifyBlocking enqueues a document for processing with a progress channel.
+// Blocks if the channel is full — used by batch ingestion to guarantee delivery.
+func (w *Worker) NotifyBlocking(ctx context.Context, documentID string, progress chan<- ProgressUpdate) error {
+	select {
+	case w.notify <- workItem{documentID: documentID, progress: progress}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (w *Worker) Start(ctx context.Context) {
-	// Resume interrupted docs.
+	// Resume interrupted docs (once, before spawning pool).
 	docs, err := w.pg.GetPendingDocuments(ctx, w.cfg.MaxRetries)
 	if err != nil {
 		log.Printf("worker: failed to get pending documents: %v", err)
@@ -97,21 +106,44 @@ func (w *Worker) Start(ctx context.Context) {
 		}
 	}
 
-	// Wait for new work.
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case item := <-w.notify:
-			err := w.ProcessDocument(ctx, item.documentID, item.progress)
-			if item.progress != nil {
-				close(item.progress)
-			}
-			if err != nil {
-				log.Printf("worker: error processing document %s: %v", item.documentID, err)
-			}
-		}
+	// Launch worker pool.
+	concurrency := w.cfg.WorkerConcurrency
+	if concurrency < 1 {
+		concurrency = 1
 	}
+	log.Printf("worker: starting pool with %d workers", concurrency)
+
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case item := <-w.notify:
+					err := w.ProcessDocument(ctx, item.documentID, item.progress)
+					if item.progress != nil {
+						// Send terminal error status if processing failed, so
+						// IngestURLs handler can count errors correctly.
+						if err != nil {
+							sendProgress(item.progress, ProgressUpdate{
+								DocumentID: item.documentID,
+								Status:     "ERROR",
+								Message:    err.Error(),
+							})
+						}
+						close(item.progress)
+					}
+					if err != nil {
+						log.Printf("worker: error processing document %s: %v", item.documentID, err)
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // ProcessDocument fetches a document from Postgres and runs it through the
