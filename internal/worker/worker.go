@@ -93,17 +93,20 @@ func (w *Worker) NotifyBlocking(ctx context.Context, documentID string, progress
 }
 
 func (w *Worker) Start(ctx context.Context) {
-	// Resume interrupted docs (once, before spawning pool).
+	// Resume interrupted docs by queuing them into the notify channel.
+	// The batch coordinator below will process them in batches.
 	docs, err := w.pg.GetPendingDocuments(ctx, w.cfg.MaxRetries)
 	if err != nil {
 		log.Printf("worker: failed to get pending documents: %v", err)
 	}
-	for _, doc := range docs {
-		if ctx.Err() != nil {
-			return
-		}
-		if err := w.ProcessDocument(ctx, doc.ID, nil); err != nil {
-			log.Printf("worker: error processing document %s: %v", doc.ID, err)
+	if len(docs) > 0 {
+		log.Printf("worker: resuming %d pending documents", len(docs))
+		for _, doc := range docs {
+			select {
+			case w.notify <- workItem{documentID: doc.ID}:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
 
