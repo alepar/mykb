@@ -4,6 +4,7 @@ option go_package = "mykb/gen/mykb/v1;mykbv1";
 
 service KBService {
   rpc IngestURL(IngestURLRequest) returns (stream IngestProgress);
+  rpc IngestURLs(IngestURLsRequest) returns (stream IngestURLsProgress);
   rpc Query(QueryRequest) returns (QueryResponse);
   rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse);
   rpc GetDocuments(GetDocumentsRequest) returns (GetDocumentsResponse);
@@ -21,6 +22,19 @@ message IngestProgress {
   string message = 3;
   int32 chunks_total = 4;
   int32 chunks_processed = 5;
+}
+
+message IngestURLsRequest {
+  repeated string urls = 1;
+  bool force = 2;
+}
+
+message IngestURLsProgress {
+  int32 current = 1;
+  int32 total = 2;
+  string url = 3;
+  string stage = 4;
+  string error = 5;
 }
 
 message QueryRequest {
