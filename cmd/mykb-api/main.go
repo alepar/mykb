@@ -61,7 +61,7 @@ func main() {
 	crawler := pipeline.NewCrawler(cfg.Crawl4AIURL)
 	embedder := pipeline.NewEmbedder(cfg.VoyageAPIKey, cfg.VoyageEmbedModel, cfg.VoyageEmbedDimension)
 	embedLimiter := ratelimit.NewAdaptiveLimiter(ratelimit.Config{
-		StartingRate: 0.4,
+		StartingRate: 3.0,
 	})
 	defer embedLimiter.Close()
 	embedder.SetLimiter(embedLimiter)
