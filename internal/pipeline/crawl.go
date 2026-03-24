@@ -113,6 +113,7 @@ func (c *Crawler) Crawl(ctx context.Context, url string) (CrawlResult, error) {
 		result, err := c.crawlOnce(ctx, url)
 		if err != nil {
 			lastErr = err
+			log.Printf("crawl: attempt %d failed for %s: %v", attempt, url, err)
 			continue
 		}
 		return result, nil
