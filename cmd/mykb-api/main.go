@@ -18,6 +18,19 @@ import (
 	"mykb/internal/worker"
 )
 
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Connect-Protocol-Version")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -78,7 +91,7 @@ func main() {
 
 	// Mount Connect RPC handler
 	path, handler := mykbv1connect.NewKBServiceHandler(srv)
-	mux.Handle(path, handler)
+	mux.Handle(path, corsMiddleware(handler))
 
 	// Mount REST API routes
 	httpHandler := server.NewHTTPHandler(pg, w)
