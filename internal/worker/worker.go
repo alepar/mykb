@@ -604,7 +604,9 @@ func (w *Worker) processBatch(ctx context.Context, batch []workItem) {
 	var prefetchDocs []batchDoc
 	var regularDocsFiltered []batchDoc
 	for _, bd := range regularDocs {
-		if w.fs.HasPrefetchHTML(bd.doc.ID) {
+		hasPrefetch := w.fs.HasPrefetchHTML(bd.doc.ID)
+		log.Printf("worker: checking prefetch for %s (id=%s): %v", bd.doc.URL, bd.doc.ID, hasPrefetch)
+		if hasPrefetch {
 			prefetchDocs = append(prefetchDocs, bd)
 		} else {
 			regularDocsFiltered = append(regularDocsFiltered, bd)
