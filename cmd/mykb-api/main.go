@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"mykb/gen/mykb/v1/mykbv1connect"
 	"mykb/internal/config"
@@ -29,6 +32,126 @@ func corsMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+const selfTestCanary = "mykb-selftest-canary-7x9k2"
+const selfTestURL = "mykb://self-test"
+const selfTestHTML = `<html><head><title>MyKB Self Test</title></head><body>
+<h1>MyKB Self Test Document</h1>
+<p>This document contains the unique canary phrase: ` + selfTestCanary + `</p>
+<p>If you can read this in query results, the full ingestion pipeline is working correctly.</p>
+</body></html>`
+
+func handleDeepHealth(
+	pg *storage.PostgresStore,
+	fs *storage.FilesystemStore,
+	qdrant *storage.QdrantStore,
+	meili *storage.MeilisearchStore,
+	w *worker.Worker,
+	searcher *search.HybridSearcher,
+) http.HandlerFunc {
+	return func(rw http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+		defer cancel()
+
+		totalStart := time.Now()
+		stages := map[string]string{}
+		respond := func(status string, err string) {
+			stages["total"] = time.Since(totalStart).Round(time.Millisecond).String()
+			code := http.StatusOK
+			if status == "fail" {
+				code = http.StatusInternalServerError
+			}
+			rw.Header().Set("Content-Type", "application/json")
+			rw.WriteHeader(code)
+			json.NewEncoder(rw).Encode(map[string]any{
+				"status": status,
+				"error":  err,
+				"stages": stages,
+			})
+		}
+
+		// Clean up any leftover test document.
+		existing, _ := pg.GetDocumentByURL(ctx, selfTestURL)
+		if existing.ID != "" {
+			cleanupTestDoc(ctx, pg, qdrant, meili, fs, existing.ID)
+		}
+
+		// Ensure cleanup on exit.
+		var docID string
+		defer func() {
+			if docID != "" {
+				cleanupTestDoc(ctx, pg, qdrant, meili, fs, docID)
+				stages["cleanup"] = "ok"
+			}
+		}()
+
+		// 1. Ingest
+		ingestStart := time.Now()
+		doc, err := pg.InsertDocument(ctx, selfTestURL)
+		if err != nil {
+			respond("fail", fmt.Sprintf("insert: %v", err))
+			return
+		}
+		docID = doc.ID
+
+		// Write prefetch HTML so we don't need crawl4ai.
+		if err := fs.WritePrefetchHTML(docID, []byte(selfTestHTML)); err != nil {
+			respond("fail", fmt.Sprintf("write prefetch: %v", err))
+			return
+		}
+
+		// Notify worker and wait for completion.
+		progressCh := make(chan worker.ProgressUpdate, 32)
+		w.NotifyWithProgress(docID, progressCh)
+
+		for update := range progressCh {
+			if update.Status == "DONE" {
+				break
+			}
+			if update.Status == "ERROR" {
+				stages["ingest"] = time.Since(ingestStart).Round(time.Millisecond).String()
+				respond("fail", fmt.Sprintf("ingest error: %s", update.Message))
+				return
+			}
+		}
+		stages["ingest"] = time.Since(ingestStart).Round(time.Millisecond).String()
+
+		// 2. Query
+		queryStart := time.Now()
+		results, err := searcher.Search(ctx, search.SearchParams{
+			Query: selfTestCanary,
+			TopK:  5,
+		})
+		if err != nil {
+			stages["query"] = time.Since(queryStart).Round(time.Millisecond).String()
+			respond("fail", fmt.Sprintf("query: %v", err))
+			return
+		}
+
+		found := false
+		for _, result := range results {
+			if result.DocumentID == docID {
+				found = true
+				break
+			}
+		}
+		stages["query"] = time.Since(queryStart).Round(time.Millisecond).String()
+
+		if !found {
+			respond("fail", "query: canary phrase not found in results")
+			return
+		}
+
+		respond("pass", "")
+	}
+}
+
+func cleanupTestDoc(ctx context.Context, pg *storage.PostgresStore, qdrant *storage.QdrantStore, meili *storage.MeilisearchStore, fs *storage.FilesystemStore, id string) {
+	_ = qdrant.DeleteByDocumentID(ctx, id)
+	_ = meili.DeleteByDocumentID(ctx, id)
+	_ = fs.DeleteDocumentFiles(id)
+	_ = pg.DeleteDocument(ctx, id)
 }
 
 func main() {
@@ -102,6 +225,9 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+
+	// Deep health check — full pipeline smoke test
+	mux.HandleFunc("GET /healthz/deep", handleDeepHealth(pg, fs, qdrant, meili, w, searcher))
 
 	httpServer := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
