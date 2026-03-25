@@ -1,4 +1,4 @@
-const DEFAULT_SERVER = "http://localhost:9091";
+const DEFAULT_SERVER = "http://api.mykb.k3s";
 
 async function getServer() {
   const result = await browser.storage.local.get("server");
