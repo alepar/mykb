@@ -233,7 +233,17 @@ func (w *Worker) doCrawl(ctx context.Context, doc *storage.Document, progress ch
 		return fmt.Errorf("set status CRAWLING: %w", err)
 	}
 
-	result, err := w.crawler.Crawl(ctx, doc.URL)
+	var result pipeline.CrawlResult
+	var err error
+	if html, readErr := w.fs.ReadPrefetchHTML(doc.ID); readErr == nil {
+		log.Printf("worker: using prefetch HTML for %s (%d bytes)", doc.URL, len(html))
+		result, err = w.crawler.CrawlWithHTML(ctx, doc.URL, string(html))
+		if err == nil {
+			w.fs.DeletePrefetchHTML(doc.ID)
+		}
+	} else {
+		result, err = w.crawler.Crawl(ctx, doc.URL)
+	}
 	if err != nil {
 		return fmt.Errorf("crawl: %w", err)
 	}
@@ -590,6 +600,18 @@ func (w *Worker) processBatch(ctx context.Context, batch []workItem) {
 		}
 	}
 
+	// Separate prefetch HTML docs from regular docs.
+	var prefetchDocs []batchDoc
+	var regularDocsFiltered []batchDoc
+	for _, bd := range regularDocs {
+		if w.fs.HasPrefetchHTML(bd.doc.ID) {
+			prefetchDocs = append(prefetchDocs, bd)
+		} else {
+			regularDocsFiltered = append(regularDocsFiltered, bd)
+		}
+	}
+	regularDocs = regularDocsFiltered
+
 	// Crawl regular URLs in batch, Reddit URLs individually — all concurrently.
 	crawlResults := make(map[string]pipeline.CrawlResult)
 	crawlErrors := make(map[string]error)
@@ -623,6 +645,26 @@ func (w *Worker) processBatch(ctx context.Context, batch []workItem) {
 				crawlErrors[bd.doc.URL] = err
 			} else {
 				crawlResults[bd.doc.URL] = result
+			}
+		}(bd)
+	}
+
+	// Individual crawl for prefetch HTML docs.
+	for _, bd := range prefetchDocs {
+		crawlWg.Add(1)
+		go func(bd batchDoc) {
+			defer crawlWg.Done()
+			html, err := w.fs.ReadPrefetchHTML(bd.doc.ID)
+			if err != nil {
+				crawlErrors[bd.doc.URL] = err
+				return
+			}
+			result, err := w.crawler.CrawlWithHTML(ctx, bd.doc.URL, string(html))
+			if err != nil {
+				crawlErrors[bd.doc.URL] = err
+			} else {
+				crawlResults[bd.doc.URL] = result
+				w.fs.DeletePrefetchHTML(bd.doc.ID)
 			}
 		}(bd)
 	}
