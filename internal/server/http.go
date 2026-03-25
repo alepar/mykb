@@ -103,9 +103,12 @@ func handleIngest(pg pgForHTTP, w workerForHTTP, fs fsForHTTP) http.HandlerFunc 
 		}
 
 		if req.HTML != "" {
+			log.Printf("server: writing prefetch HTML for %s (%d bytes)", doc.ID, len(req.HTML))
 			if err := fs.WritePrefetchHTML(doc.ID, []byte(req.HTML)); err != nil {
 				log.Printf("server: failed to write prefetch HTML for %s: %v", doc.ID, err)
 			}
+		} else {
+			log.Printf("server: no HTML provided for %s", doc.ID)
 		}
 
 		w.Notify(doc.ID)
