@@ -51,19 +51,21 @@ Key differences:
 - Error codes: `connect.CodeAlreadyExists` instead of `codes.AlreadyExists`, `connect.NewError()` instead of `status.Errorf()`
 - Remove `mykbv1.UnimplementedKBServiceServer` embed
 
+**Internal self-calls:** `IngestURL` and `IngestURLs` currently call `s.DeleteDocument()` directly for force re-ingest. After migration, extract the delete logic into a private `deleteDocument(ctx, id)` method that both the RPC handler and the force-delete paths call, avoiding the awkwardness of wrapping/unwrapping `connect.Request`.
+
 ### CLI client (`cmd/mykb/main.go`)
 
 Replace gRPC client with Connect client:
 
-- `connect.NewClient()` instead of `grpc.NewClient()`
+- `mykbv1connect.NewKBServiceClient(http.DefaultClient, baseURL)` instead of `grpc.NewClient()`
 - Takes a URL (`http://host`) instead of `host:port`
 - No `credentials/insecure` needed
 - Unary calls: `client.Query(ctx, connect.NewRequest(msg))` returns `(*connect.Response[T], error)`
-- Server streaming: `client.IngestURL(ctx, connect.NewRequest(msg))` returns a `*connect.ServerStreamForClient[T]`, iterate via `stream.Receive()` (returns `bool`) + `stream.Msg()`
+- Server streaming: `client.IngestURL(ctx, connect.NewRequest(msg))` returns a `*connect.ServerStreamForClient[T]`, iterate via `for stream.Receive() { msg := stream.Msg(); ... }; if err := stream.Err(); err != nil { ... }`
 
-The `--host` flag semantics change: value is now an HTTP URL (e.g., `http://mykb.k3s`) instead of `host:port`. The `~/.mykb.conf` host config should also be updated to expect URLs.
+The `--host` flag semantics change: value is now an HTTP URL (e.g., `http://mykb.k3s`) instead of `host:port`. The `~/.mykb.conf` host config should also be updated to expect URLs. Users with existing configs containing `host:port` format will need to update manually — this is a breaking change for the config file.
 
-The `connect()` helper function is removed — Connect clients are created directly per-service.
+The `connect()` helper function is removed — Connect clients are created via the generated `mykbv1connect.NewKBServiceClient()`.
 
 ### Go dependencies
 
@@ -81,17 +83,26 @@ Remove `GRPCPort` field. Keep `HTTPPort` (default 9091) as the single server por
 
 ### K8s manifests
 
-**Remove:**
-- `k8s/mykb-api-service.yaml` — delete the file (contained two services: `mykb-api-grpc` and `mykb-api-http`)
-- `k8s/ingress-grpc.yaml` — delete
-- `k8s/ingress-http.yaml` — delete
+**Replace:**
+- `k8s/mykb-api-service.yaml` — replace contents with single service `mykb-api` on port 9091 (was two services: `mykb-api-grpc` and `mykb-api-http`). Remove the `h2c` service annotation.
+
+**Delete:**
+- `k8s/ingress-grpc.yaml`
+- `k8s/ingress-http.yaml`
 
 **Create:**
-- `k8s/mykb-api-service.yaml` — single service `mykb-api` on port 9091
 - `k8s/ingress.yaml` — single ingress `mykb-ingress`, host `mykb.k3s`, path `/`, backend `mykb-api:9091`. No h2c annotation.
 
 **Modify:**
-- `k8s/mykb-api-deployment.yaml` — remove port 9090 (`grpc`), keep port 9091 (`http`). Update readiness/liveness probes to use HTTP GET on port 9091 (Connect serves a default health endpoint, or we add a simple `/healthz` handler).
+- `k8s/mykb-api-deployment.yaml` — remove port 9090 (`grpc`), keep port 9091 (`http`). Update readiness/liveness probes to HTTP GET `/healthz` on port 9091 (add a simple `mux.HandleFunc("GET /healthz", ...)` handler in main.go).
+
+### docker-compose.yml
+
+Remove the `9090:9090` port mapping from the `mykb` service. Keep `9091:9091`.
+
+### CLAUDE.md
+
+Update: Docker Compose services table (port 9090 → removed), `just proto` command, proto prerequisites (`protoc-gen-connect-go` replaces `protoc-gen-go-grpc`), and any references to gRPC-specific configuration.
 
 ### CLI config (`internal/cliconfig/`)
 
