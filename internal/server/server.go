@@ -2,12 +2,11 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
 
 	mykbv1 "mykb/gen/mykb/v1"
 	"mykb/internal/config"
@@ -16,9 +15,8 @@ import (
 	"mykb/internal/worker"
 )
 
-// Server implements the mykbv1.KBServiceServer interface.
+// Server implements the mykbv1connect.KBServiceHandler interface.
 type Server struct {
-	mykbv1.UnimplementedKBServiceServer
 	pg       *storage.PostgresStore
 	fs       *storage.FilesystemStore
 	qdrant   *storage.QdrantStore
@@ -51,25 +49,23 @@ func NewServer(
 
 // IngestURL inserts a document for the given URL and streams progress updates
 // as the worker processes it through the ingestion pipeline.
-func (s *Server) IngestURL(req *mykbv1.IngestURLRequest, stream grpc.ServerStreamingServer[mykbv1.IngestProgress]) error {
-	ctx := stream.Context()
-
+func (s *Server) IngestURL(ctx context.Context, req *connect.Request[mykbv1.IngestURLRequest], stream *connect.ServerStream[mykbv1.IngestProgress]) error {
 	// If force is set, delete the existing document first.
-	if req.GetForce() {
-		existing, err := s.pg.GetDocumentByURL(ctx, req.GetUrl())
+	if req.Msg.GetForce() {
+		existing, err := s.pg.GetDocumentByURL(ctx, req.Msg.GetUrl())
 		if err == nil && existing.ID != "" {
-			if _, err := s.DeleteDocument(ctx, &mykbv1.DeleteDocumentRequest{Id: existing.ID}); err != nil {
+			if err := s.deleteDocument(ctx, existing.ID); err != nil {
 				log.Printf("server: force delete of existing document %s failed: %v", existing.ID, err)
 			}
 		}
 	}
 
-	doc, err := s.pg.InsertDocument(ctx, req.GetUrl())
+	doc, err := s.pg.InsertDocument(ctx, req.Msg.GetUrl())
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
-			return status.Errorf(codes.AlreadyExists, "URL already ingested: %s", req.GetUrl())
+			return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("URL already ingested: %s", req.Msg.GetUrl()))
 		}
-		return status.Errorf(codes.Internal, "insert document: %v", err)
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("insert document: %v", err))
 	}
 
 	progressChan := make(chan worker.ProgressUpdate, 32)
@@ -93,13 +89,12 @@ func (s *Server) IngestURL(req *mykbv1.IngestURLRequest, stream grpc.ServerStrea
 
 // IngestURLs inserts documents for the given URLs and streams batch progress
 // updates as the worker processes them through the ingestion pipeline.
-func (s *Server) IngestURLs(req *mykbv1.IngestURLsRequest, stream grpc.ServerStreamingServer[mykbv1.IngestURLsProgress]) error {
-	ctx := stream.Context()
-	urls := req.GetUrls()
+func (s *Server) IngestURLs(ctx context.Context, req *connect.Request[mykbv1.IngestURLsRequest], stream *connect.ServerStream[mykbv1.IngestURLsProgress]) error {
+	urls := req.Msg.GetUrls()
 	total := int32(len(urls))
 
 	if total == 0 {
-		return status.Errorf(codes.InvalidArgument, "no URLs provided")
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("no URLs provided"))
 	}
 
 	type docInfo struct {
@@ -112,10 +107,10 @@ func (s *Server) IngestURLs(req *mykbv1.IngestURLsRequest, stream grpc.ServerStr
 	progressChans := make([]chan worker.ProgressUpdate, 0, len(urls))
 
 	for _, url := range urls {
-		if req.GetForce() {
+		if req.Msg.GetForce() {
 			existing, err := s.pg.GetDocumentByURL(ctx, url)
 			if err == nil && existing.ID != "" {
-				if _, err := s.DeleteDocument(ctx, &mykbv1.DeleteDocumentRequest{Id: existing.ID}); err != nil {
+				if err := s.deleteDocument(ctx, existing.ID); err != nil {
 					log.Printf("server: force delete of existing document %s failed: %v", existing.ID, err)
 				}
 			}
@@ -135,7 +130,7 @@ func (s *Server) IngestURLs(req *mykbv1.IngestURLsRequest, stream grpc.ServerStr
 				}
 				continue
 			}
-			return status.Errorf(codes.Internal, "insert document for %s: %v", url, err)
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("insert document for %s: %v", url, err))
 		}
 
 		ch := make(chan worker.ProgressUpdate, 32)
@@ -146,7 +141,7 @@ func (s *Server) IngestURLs(req *mykbv1.IngestURLsRequest, stream grpc.ServerStr
 	// Queue all documents using blocking sends.
 	for i, doc := range batchDocs {
 		if err := s.worker.NotifyBlocking(ctx, doc.id, progressChans[i]); err != nil {
-			return status.Errorf(codes.Internal, "queue document %s: %v", doc.url, err)
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("queue document %s: %v", doc.url, err))
 		}
 	}
 
@@ -183,19 +178,19 @@ func (s *Server) IngestURLs(req *mykbv1.IngestURLsRequest, stream grpc.ServerStr
 }
 
 // Query performs a hybrid search and returns matching chunk results.
-func (s *Server) Query(ctx context.Context, req *mykbv1.QueryRequest) (*mykbv1.QueryResponse, error) {
+func (s *Server) Query(ctx context.Context, req *connect.Request[mykbv1.QueryRequest]) (*connect.Response[mykbv1.QueryResponse], error) {
 	params := search.SearchParams{
-		Query:       req.GetQuery(),
-		TopK:        int(req.GetTopK()),
-		VectorDepth: int(req.GetVectorDepth()),
-		FTSDepth:    int(req.GetFtsDepth()),
-		RerankDepth: int(req.GetRerankDepth()),
-		NoMerge:     req.GetNoMerge(),
+		Query:       req.Msg.GetQuery(),
+		TopK:        int(req.Msg.GetTopK()),
+		VectorDepth: int(req.Msg.GetVectorDepth()),
+		FTSDepth:    int(req.Msg.GetFtsDepth()),
+		RerankDepth: int(req.Msg.GetRerankDepth()),
+		NoMerge:     req.Msg.GetNoMerge(),
 	}
 
 	results, err := s.searcher.Search(ctx, params)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "search: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("search: %v", err))
 	}
 
 	protoResults := make([]*mykbv1.QueryResult, len(results))
@@ -210,20 +205,20 @@ func (s *Server) Query(ctx context.Context, req *mykbv1.QueryRequest) (*mykbv1.Q
 		}
 	}
 
-	return &mykbv1.QueryResponse{Results: protoResults}, nil
+	return connect.NewResponse(&mykbv1.QueryResponse{Results: protoResults}), nil
 }
 
 // ListDocuments returns a paginated list of documents.
-func (s *Server) ListDocuments(ctx context.Context, req *mykbv1.ListDocumentsRequest) (*mykbv1.ListDocumentsResponse, error) {
-	limit := int(req.GetLimit())
+func (s *Server) ListDocuments(ctx context.Context, req *connect.Request[mykbv1.ListDocumentsRequest]) (*connect.Response[mykbv1.ListDocumentsResponse], error) {
+	limit := int(req.Msg.GetLimit())
 	if limit == 0 {
 		limit = 50
 	}
-	offset := int(req.GetOffset())
+	offset := int(req.Msg.GetOffset())
 
 	docs, total, err := s.pg.ListDocuments(ctx, limit, offset)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "list documents: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list documents: %v", err))
 	}
 
 	protoDocs := make([]*mykbv1.Document, len(docs))
@@ -231,23 +226,23 @@ func (s *Server) ListDocuments(ctx context.Context, req *mykbv1.ListDocumentsReq
 		protoDocs[i] = documentToProto(doc)
 	}
 
-	return &mykbv1.ListDocumentsResponse{
+	return connect.NewResponse(&mykbv1.ListDocumentsResponse{
 		Documents: protoDocs,
 		Total:     int32(total),
-	}, nil
+	}), nil
 }
 
 // GetDocuments retrieves documents by their IDs, optionally including content.
-func (s *Server) GetDocuments(ctx context.Context, req *mykbv1.GetDocumentsRequest) (*mykbv1.GetDocumentsResponse, error) {
-	docs, err := s.pg.GetDocumentsByIDs(ctx, req.GetIds())
+func (s *Server) GetDocuments(ctx context.Context, req *connect.Request[mykbv1.GetDocumentsRequest]) (*connect.Response[mykbv1.GetDocumentsResponse], error) {
+	docs, err := s.pg.GetDocumentsByIDs(ctx, req.Msg.GetIds())
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get documents: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get documents: %v", err))
 	}
 
 	protoDocs := make([]*mykbv1.Document, len(docs))
 	for i, doc := range docs {
 		d := documentToProto(doc)
-		if req.GetIncludeContent() {
+		if req.Msg.GetIncludeContent() {
 			content, err := s.fs.ReadDocument(doc.ID)
 			if err != nil {
 				log.Printf("server: failed to read content for document %s: %v", doc.ID, err)
@@ -258,40 +253,48 @@ func (s *Server) GetDocuments(ctx context.Context, req *mykbv1.GetDocumentsReque
 		protoDocs[i] = d
 	}
 
-	return &mykbv1.GetDocumentsResponse{Documents: protoDocs}, nil
+	return connect.NewResponse(&mykbv1.GetDocumentsResponse{Documents: protoDocs}), nil
 }
 
 // DeleteDocument removes a document from all stores (Qdrant, Meilisearch,
 // filesystem, and Postgres).
-func (s *Server) DeleteDocument(ctx context.Context, req *mykbv1.DeleteDocumentRequest) (*mykbv1.DeleteDocumentResponse, error) {
-	id := req.GetId()
+func (s *Server) DeleteDocument(ctx context.Context, req *connect.Request[mykbv1.DeleteDocumentRequest]) (*connect.Response[mykbv1.DeleteDocumentResponse], error) {
+	if err := s.deleteDocument(ctx, req.Msg.GetId()); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&mykbv1.DeleteDocumentResponse{}), nil
+}
 
+// deleteDocument contains the actual delete logic: verify exists, then delete
+// from all stores. Used by both DeleteDocument and force-delete paths in
+// IngestURL/IngestURLs.
+func (s *Server) deleteDocument(ctx context.Context, id string) error {
 	// Verify the document exists.
 	if _, err := s.pg.GetDocument(ctx, id); err != nil {
-		return nil, status.Errorf(codes.NotFound, "document not found: %v", err)
+		return connect.NewError(connect.CodeNotFound, fmt.Errorf("document not found: %v", err))
 	}
 
 	// Delete from Qdrant.
 	if err := s.qdrant.DeleteByDocumentID(ctx, id); err != nil {
-		return nil, status.Errorf(codes.Internal, "delete from qdrant: %v", err)
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("delete from qdrant: %v", err))
 	}
 
 	// Delete from Meilisearch.
 	if err := s.meili.DeleteByDocumentID(ctx, id); err != nil {
-		return nil, status.Errorf(codes.Internal, "delete from meilisearch: %v", err)
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("delete from meilisearch: %v", err))
 	}
 
 	// Delete filesystem files.
 	if err := s.fs.DeleteDocumentFiles(id); err != nil {
-		return nil, status.Errorf(codes.Internal, "delete files: %v", err)
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("delete files: %v", err))
 	}
 
 	// Delete from Postgres (cascades to chunks).
 	if err := s.pg.DeleteDocument(ctx, id); err != nil {
-		return nil, status.Errorf(codes.Internal, "delete from postgres: %v", err)
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("delete from postgres: %v", err))
 	}
 
-	return &mykbv1.DeleteDocumentResponse{}, nil
+	return nil
 }
 
 // documentToProto converts a storage.Document to a proto Document message.
