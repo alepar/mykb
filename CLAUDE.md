@@ -10,7 +10,7 @@ just test               # go test ./...
 just lint               # golangci-lint run ./...
 just fmt                # gofmt -w .
 just cli                # go build -o mykb ./cmd/mykb/
-just proto              # regenerate gRPC code from proto/mykb/v1/kb.proto
+just proto              # regenerate ConnectRPC code from proto/mykb/v1/kb.proto
 just up / just down     # docker compose up -d / down
 ```
 
@@ -19,7 +19,7 @@ Run a single test:
 go test ./internal/pipeline/ -run TestChunkMarkdown_HeadingSplits -v
 ```
 
-Proto regeneration requires `protoc-gen-go` and `protoc-gen-go-grpc` in PATH (`~/go/bin`).
+Proto regeneration requires `protoc-gen-go` and `protoc-gen-connect-go` in PATH (`~/go/bin`).
 
 ## Architecture
 
@@ -27,7 +27,7 @@ MyKB is a RAG knowledge base: ingest web pages, chunk them, embed with Voyage AI
 
 **Two binaries:**
 - `cmd/mykb/` — CLI client (`mykb ingest <url>`, `mykb query <query>`). Deploys to client machines.
-- `cmd/mykb-api/` — gRPC server. Runs in Docker alongside backends.
+- `cmd/mykb-api/` — HTTP server (ConnectRPC). Runs in Docker alongside backends.
 
 **Ingestion pipeline** (`internal/pipeline/`): URL → Crawl4AI (markdown) → recursive chunker → Voyage AI embeddings → dual-index (Qdrant + Meilisearch). Orchestrated by `internal/worker/` which manages document lifecycle and retry.
 
@@ -35,7 +35,7 @@ MyKB is a RAG knowledge base: ingest web pages, chunk them, embed with Voyage AI
 
 **Storage** (`internal/storage/`): Four backends — PostgreSQL (metadata, retry state), Qdrant (vectors, int8 quantized), Meilisearch (full-text), filesystem (raw markdown, 2-level directory sharding).
 
-**gRPC service** (`internal/server/`): Implements `proto/mykb/v1/kb.proto`. Generated code lives in `gen/mykb/v1/`.
+**API service** (`internal/server/`): Implements `proto/mykb/v1/kb.proto` via ConnectRPC. Generated code lives in `gen/mykb/v1/mykbv1connect/`.
 
 ## Key Design Decisions
 
@@ -48,7 +48,7 @@ MyKB is a RAG knowledge base: ingest web pages, chunk them, embed with Voyage AI
 
 | Service | Host Port | Internal Port | Purpose |
 |---------|-----------|---------------|---------|
-| mykb | 9090 | 9090 | gRPC API server |
+| mykb | 9091 | 9091 | API server (ConnectRPC) |
 | postgres | 5433 | 5432 | Document/chunk metadata |
 | qdrant | 6335 (gRPC), 6336 (HTTP) | 6334 (gRPC), 6333 (HTTP) | Vector search |
 | meilisearch | 7701 | 7700 | Full-text search |
