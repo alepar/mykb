@@ -132,29 +132,46 @@ func (w *Worker) Start(ctx context.Context) {
 
 // retryScanner periodically checks for documents whose next_retry_at has passed
 // and queues them back into the notify channel for reprocessing.
+// Tracks recently queued IDs to avoid duplicate work.
 func (w *Worker) retryScanner(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+
+	queued := make(map[string]time.Time) // docID → when queued
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Clean up old entries (> 5 minutes = enough for any batch to complete)
+			now := time.Now()
+			for id, t := range queued {
+				if now.Sub(t) > 5*time.Minute {
+					delete(queued, id)
+				}
+			}
+
 			docs, err := w.pg.GetPendingDocuments(ctx, w.cfg.MaxRetries)
 			if err != nil {
 				log.Printf("worker: retry scan failed: %v", err)
 				continue
 			}
-			if len(docs) > 0 {
-				log.Printf("worker: retry scan found %d documents to retry", len(docs))
-				for _, doc := range docs {
-					select {
-					case w.notify <- workItem{documentID: doc.ID}:
-					case <-ctx.Done():
-						return
-					}
+			newCount := 0
+			for _, doc := range docs {
+				if _, already := queued[doc.ID]; already {
+					continue
 				}
+				select {
+				case w.notify <- workItem{documentID: doc.ID}:
+					queued[doc.ID] = now
+					newCount++
+				case <-ctx.Done():
+					return
+				}
+			}
+			if newCount > 0 {
+				log.Printf("worker: retry scan queued %d new documents (%d skipped as already queued)", newCount, len(docs)-newCount)
 			}
 		}
 	}
