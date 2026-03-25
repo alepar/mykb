@@ -19,6 +19,11 @@ Run a single test:
 go test ./internal/pipeline/ -run TestChunkMarkdown_HeadingSplits -v
 ```
 
+Deep health check (full pipeline smoke test — ingest, chunk, embed, index, query, cleanup):
+```bash
+curl http://api.mykb.k3s/healthz/deep
+```
+
 Proto regeneration requires `protoc-gen-go` and `protoc-gen-connect-go` in PATH (`~/go/bin`).
 
 ## Architecture
