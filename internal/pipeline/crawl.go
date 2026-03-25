@@ -121,6 +121,115 @@ func (c *Crawler) Crawl(ctx context.Context, url string) (CrawlResult, error) {
 	return CrawlResult{}, fmt.Errorf("crawl failed after %d retries: %w", crawlMaxRetries, lastErr)
 }
 
+// CrawlWithHTML converts pre-fetched HTML to markdown via Crawl4AI's raw: protocol.
+// This bypasses URL fetching — the HTML is sent directly for markdown conversion.
+// Retries with backoff on transport failures.
+func (c *Crawler) CrawlWithHTML(ctx context.Context, url string, html string) (CrawlResult, error) {
+	var lastErr error
+	for attempt := 0; attempt <= crawlMaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := crawlBaseDelay * time.Duration(1<<(attempt-1))
+			log.Printf("crawl-html: retry %d/%d for %s after %v", attempt, crawlMaxRetries, url, delay)
+			select {
+			case <-ctx.Done():
+				return CrawlResult{}, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		result, err := c.crawlRawHTML(ctx, url, html)
+		if err != nil {
+			lastErr = err
+			log.Printf("crawl-html: attempt %d failed for %s: %v", attempt, url, err)
+			continue
+		}
+		return result, nil
+	}
+	return CrawlResult{}, fmt.Errorf("crawl-html failed after %d retries: %w", crawlMaxRetries, lastErr)
+}
+
+// crawlRawHTML sends HTML content to Crawl4AI using the raw: prefix.
+func (c *Crawler) crawlRawHTML(ctx context.Context, url string, html string) (CrawlResult, error) {
+	body, err := json.Marshal(crawlRequest{
+		URLs:     []string{"raw:" + html},
+		Priority: 10,
+		CrawlerConfig: &crawlCrawlerConfig{
+			Type: "CrawlerRunConfig",
+			Params: crawlCrawlerConfigParams{
+				MarkdownGenerator: &crawlMarkdownGenerator{
+					Type: "DefaultMarkdownGenerator",
+					Params: crawlMarkdownGeneratorParams{
+						ContentFilter: &crawlContentFilter{
+							Type:   "PruningContentFilter",
+							Params: crawlContentFilterParams{Threshold: 0.48},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return CrawlResult{}, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/crawl", bytes.NewReader(body))
+	if err != nil {
+		return CrawlResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return CrawlResult{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return CrawlResult{}, fmt.Errorf("crawl4ai returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var cr crawlResponse
+	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		return CrawlResult{}, fmt.Errorf("decode crawl response: %w", err)
+	}
+
+	if !cr.Success || len(cr.Results) == 0 {
+		return CrawlResult{}, fmt.Errorf("crawl4ai returned no results")
+	}
+
+	result := cr.Results[0]
+	if !result.Success {
+		return CrawlResult{}, fmt.Errorf("crawl4ai failed: %s", result.Error)
+	}
+
+	rawMarkdown := ""
+	fitMarkdown := ""
+	if result.Markdown != nil {
+		rawMarkdown = result.Markdown.RawMarkdown
+		fitMarkdown = result.Markdown.FitMarkdown
+	}
+
+	markdown := fitMarkdown
+	if markdown == "" {
+		markdown = rawMarkdown
+	}
+
+	// Title from metadata (unlikely with raw: mode) or first heading.
+	title := ""
+	if result.Metadata != nil && result.Metadata.Title != "" {
+		title = result.Metadata.Title
+	} else {
+		title = extractTitle(markdown)
+	}
+
+	return CrawlResult{
+		Markdown:    markdown,
+		RawMarkdown: rawMarkdown,
+		Title:       title,
+	}, nil
+}
+
 // IsRedditURL returns true if the URL should be crawled via the Reddit path.
 func IsRedditURL(url string) bool {
 	return isRedditThread(url)
