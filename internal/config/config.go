@@ -12,7 +12,6 @@ type Config struct {
 	MeilisearchKey  string
 	Crawl4AIURL     string
 	VoyageAPIKey string
-	GRPCPort     string
 	HTTPPort     string
 	DataDir      string
 
@@ -51,7 +50,6 @@ func Load() *Config {
 		MeilisearchKey:  os.Getenv("MEILISEARCH_KEY"),
 		Crawl4AIURL:     envOr("CRAWL4AI_URL", "http://localhost:11235"),
 		VoyageAPIKey: os.Getenv("VOYAGE_API_KEY"),
-		GRPCPort:     envOr("GRPC_PORT", "9090"),
 		HTTPPort:     envOr("HTTP_PORT", "9091"),
 		DataDir:      envOr("DATA_DIR", "data/documents"),
 

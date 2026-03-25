@@ -3,16 +3,12 @@ package main
 import (
 	"context"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
-
-	mykbv1 "mykb/gen/mykb/v1"
+	"mykb/gen/mykb/v1/mykbv1connect"
 	"mykb/internal/config"
 	"mykb/internal/pipeline"
 	"mykb/internal/ratelimit"
@@ -75,28 +71,29 @@ func main() {
 	w := worker.NewWorker(pg, fs, crawler, embedder, indexer, cfg)
 	go w.Start(ctx)
 
-	// gRPC server
+	// HTTP server with Connect handler + REST API
 	srv := server.NewServer(pg, fs, qdrant, meili, searcher, w, cfg)
-	lis, err := net.Listen("tcp", ":"+cfg.GRPCPort)
-	if err != nil {
-		log.Fatalf("listen: %v", err)
-	}
 
-	grpcServer := grpc.NewServer()
-	mykbv1.RegisterKBServiceServer(grpcServer, srv)
-	reflection.Register(grpcServer)
+	mux := http.NewServeMux()
 
+	// Mount Connect RPC handler
+	path, handler := mykbv1connect.NewKBServiceHandler(srv)
+	mux.Handle(path, handler)
+
+	// Mount REST API routes
 	httpHandler := server.NewHTTPHandler(pg, w)
+	mux.Handle("/api/", httpHandler)
+
+	// Health check
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
 	httpServer := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
-		Handler: httpHandler,
+		Handler: mux,
 	}
-	go func() {
-		log.Printf("HTTP API server listening on :%s", cfg.HTTPPort)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http: %v", err)
-		}
-	}()
 
 	// Graceful shutdown
 	go func() {
@@ -104,13 +101,12 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		log.Println("shutting down...")
-		grpcServer.GracefulStop()
 		_ = httpServer.Shutdown(context.Background())
 		cancel()
 	}()
 
-	log.Printf("gRPC server listening on :%s", cfg.GRPCPort)
-	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("serve: %v", err)
+	log.Printf("server listening on :%s", cfg.HTTPPort)
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("server: %v", err)
 	}
 }
