@@ -84,3 +84,29 @@ func (fs *FilesystemStore) DeleteDocumentFiles(id string) error {
 func chunkFileName(id string, index int) string {
 	return fmt.Sprintf("%s.%03d.md", id, index)
 }
+
+// WritePrefetchHTML writes pre-fetched HTML content for a document.
+// Used when the browser extension sends rendered HTML alongside the URL.
+func (fs *FilesystemStore) WritePrefetchHTML(id string, html []byte) error {
+	dir := fs.docDir(id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create doc dir: %w", err)
+	}
+	return os.WriteFile(filepath.Join(dir, id+".prefetch.html"), html, 0o644)
+}
+
+// ReadPrefetchHTML reads pre-fetched HTML for a document.
+func (fs *FilesystemStore) ReadPrefetchHTML(id string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(fs.docDir(id), id+".prefetch.html"))
+}
+
+// HasPrefetchHTML returns true if a prefetch HTML file exists for a document.
+func (fs *FilesystemStore) HasPrefetchHTML(id string) bool {
+	_, err := os.Stat(filepath.Join(fs.docDir(id), id+".prefetch.html"))
+	return err == nil
+}
+
+// DeletePrefetchHTML removes the prefetch HTML file (best-effort).
+func (fs *FilesystemStore) DeletePrefetchHTML(id string) {
+	_ = os.Remove(filepath.Join(fs.docDir(id), id+".prefetch.html"))
+}
