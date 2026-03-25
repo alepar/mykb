@@ -495,7 +495,7 @@ func (w *Worker) doIndex(ctx context.Context, doc *storage.Document, progress ch
 
 // handleError records the error on the document and returns it.
 func (w *Worker) handleError(ctx context.Context, docID string, err error) error {
-	if setErr := w.pg.SetDocumentError(ctx, docID, err.Error()); setErr != nil {
+	if setErr := w.pg.SetDocumentError(ctx, docID, err.Error(), w.cfg.MaxRetries); setErr != nil {
 		log.Printf("worker: failed to set error on document %s: %v", docID, setErr)
 	}
 	return err

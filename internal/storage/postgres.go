@@ -116,14 +116,16 @@ func (s *PostgresStore) UpdateDocumentStatus(ctx context.Context, id, status str
 
 // SetDocumentError sets the error message, increments retry_count, and
 // computes next_retry_at using exponential backoff (2^retry_count * 30s).
-func (s *PostgresStore) SetDocumentError(ctx context.Context, id, errMsg string) error {
+// When retry_count reaches maxRetries, status is set to ERROR.
+func (s *PostgresStore) SetDocumentError(ctx context.Context, id, errMsg string, maxRetries int) error {
 	ct, err := s.pool.Exec(ctx,
 		`UPDATE documents
 		 SET error = $2,
 		     retry_count = retry_count + 1,
 		     next_retry_at = now() + make_interval(secs => power(2, retry_count) * 30),
+		     status = CASE WHEN retry_count + 1 >= $3 THEN 'ERROR' ELSE status END,
 		     updated_at = now()
-		 WHERE id = $1`, id, errMsg)
+		 WHERE id = $1`, id, errMsg, maxRetries)
 	if err != nil {
 		return fmt.Errorf("set document error: %w", err)
 	}
