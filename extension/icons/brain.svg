@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
+  <!-- Brain body -->
+  <ellipse cx="48" cy="50" rx="36" ry="32" fill="#ff7eb3" stroke="#d44a7a" stroke-width="2.5"/>
+  <!-- Brain division line -->
+  <path d="M48 20 C48 35, 48 65, 48 80" stroke="#d44a7a" stroke-width="2" fill="none"/>
+  <!-- Left hemisphere folds -->
+  <path d="M20 40 C28 32, 38 34, 42 40" stroke="#d44a7a" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M18 54 C26 46, 36 48, 44 54" stroke="#d44a7a" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M22 66 C30 58, 38 60, 44 66" stroke="#d44a7a" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <!-- Right hemisphere folds -->
+  <path d="M76 40 C68 32, 58 34, 54 40" stroke="#d44a7a" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M78 54 C70 46, 60 48, 52 54" stroke="#d44a7a" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M74 66 C66 58, 58 60, 52 66" stroke="#d44a7a" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <!-- Brain stem -->
+  <path d="M44 80 C44 88, 52 88, 52 80" fill="#ff7eb3" stroke="#d44a7a" stroke-width="2.5"/>
+  <!-- Highlight/shine -->
+  <ellipse cx="34" cy="36" rx="8" ry="5" fill="rgba(255,255,255,0.3)" transform="rotate(-20 34 36)"/>
+</svg>
