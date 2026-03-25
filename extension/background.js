@@ -79,10 +79,16 @@ browser.browserAction.onClicked.addListener(async (tab) => {
 
   try {
     // Capture rendered HTML from the active tab.
-    const results = await browser.tabs.executeScript(tab.id, {
-      code: "document.documentElement.outerHTML",
-    });
-    const html = results && results[0] ? results[0] : "";
+    // Falls back to URL-only if content script injection fails.
+    let html = "";
+    try {
+      const results = await browser.tabs.executeScript(tab.id, {
+        code: "document.documentElement.outerHTML",
+      });
+      html = results && results[0] ? results[0] : "";
+    } catch (scriptErr) {
+      console.warn("mykb: failed to capture HTML, falling back to URL-only:", scriptErr);
+    }
 
     const resp = await fetch(`${server}/api/ingest`, {
       method: "POST",
