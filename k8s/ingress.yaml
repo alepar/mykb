@@ -1,7 +1,7 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: mykb-ingress-grpc
+  name: mykb-ingress
   namespace: mykb
 spec:
   rules:
@@ -12,6 +12,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: mykb-api-grpc
+                name: mykb-api
                 port:
-                  number: 9090
+                  number: 9091

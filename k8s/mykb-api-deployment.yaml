@@ -23,8 +23,6 @@ spec:
         - name: mykb-api
           image: ghcr.io/alepar/mykb:latest
           ports:
-            - containerPort: 9090
-              name: grpc
             - containerPort: 9091
               name: http
           env:
@@ -75,13 +73,15 @@ spec:
               memory: "256Mi"
               cpu: "500m"
           readinessProbe:
-            tcpSocket:
-              port: 9090
+            httpGet:
+              path: /healthz
+              port: 9091
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            tcpSocket:
-              port: 9090
+            httpGet:
+              path: /healthz
+              port: 9091
             initialDelaySeconds: 5
             periodSeconds: 20
       volumes:
