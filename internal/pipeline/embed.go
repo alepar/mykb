@@ -128,15 +128,34 @@ func (e *Embedder) embedWithRetry(ctx context.Context, inputs [][]string, inputT
 // API's context window (actual limit is 32K, we leave headroom).
 const maxContextTokens = 20000
 
+// maxChunkTokens is the limit for a single chunk. Chunks exceeding this
+// are truncated to fit within the contextualized embedding context window.
+const maxChunkTokens = 30000
+
+// truncateChunk truncates a chunk to fit within maxChunkTokens.
+func truncateChunk(text string) string {
+	if estimateTokens(text) <= maxChunkTokens {
+		return text
+	}
+	// estimateTokens uses len/4, so maxChunkTokens * 4 chars is the limit.
+	maxChars := maxChunkTokens * 4
+	if len(text) > maxChars {
+		text = text[:maxChars]
+	}
+	log.Printf("embed: truncated oversized chunk from %d to %d chars", len(text), maxChars)
+	return text
+}
+
 // splitChunkBatches splits chunks into sub-batches where each sub-batch's
-// estimated total tokens stays under maxContextTokens. This handles documents
-// whose total content exceeds the 32K context window.
+// estimated total tokens stays under maxContextTokens. Oversized individual
+// chunks are truncated to fit.
 func splitChunkBatches(chunks []string) [][]string {
 	var batches [][]string
 	var current []string
 	currentTokens := 0
 
 	for _, chunk := range chunks {
+		chunk = truncateChunk(chunk)
 		tokens := estimateTokens(chunk)
 		if len(current) > 0 && currentTokens+tokens > maxContextTokens {
 			batches = append(batches, current)
