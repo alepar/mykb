@@ -15,6 +15,7 @@ type pgForHTTP interface {
 	InsertDocument(ctx context.Context, url string) (storage.Document, error)
 	GetDocument(ctx context.Context, id string) (storage.Document, error)
 	GetDocumentByURL(ctx context.Context, url string) (storage.Document, error)
+	DeleteDocument(ctx context.Context, id string) error
 	StatusCounts(ctx context.Context) (map[string]int, int, error)
 }
 
@@ -74,6 +75,14 @@ func handleIngest(pg pgForHTTP, w workerForHTTP, fs fsForHTTP) http.HandlerFunc 
 		if req.URL == "" {
 			http.Error(rw, "url is required", http.StatusBadRequest)
 			return
+		}
+
+		// Force re-ingest: delete existing document first.
+		if req.Force {
+			existing, err := pg.GetDocumentByURL(r.Context(), req.URL)
+			if err == nil && existing.ID != "" {
+				_ = pg.DeleteDocument(r.Context(), existing.ID)
+			}
 		}
 
 		doc, err := pg.InsertDocument(r.Context(), req.URL)

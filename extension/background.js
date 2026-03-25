@@ -87,7 +87,7 @@ browser.browserAction.onClicked.addListener(async (tab) => {
     const resp = await fetch(`${server}/api/ingest`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: tab.url, html }),
+      body: JSON.stringify({ url: tab.url, html, force: true }),
     });
 
     if (resp.status === 409) {
