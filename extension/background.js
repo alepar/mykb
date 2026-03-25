@@ -78,10 +78,16 @@ browser.browserAction.onClicked.addListener(async (tab) => {
   setBadge("...", "#ddaa00");
 
   try {
+    // Capture rendered HTML from the active tab.
+    const results = await browser.tabs.executeScript(tab.id, {
+      code: "document.documentElement.outerHTML",
+    });
+    const html = results && results[0] ? results[0] : "";
+
     const resp = await fetch(`${server}/api/ingest`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: tab.url }),
+      body: JSON.stringify({ url: tab.url, html }),
     });
 
     if (resp.status === 409) {
