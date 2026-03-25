@@ -10,7 +10,7 @@
   ],
   "browser_action": {
     "default_icon": "icons/brain.svg",
-    "default_title": "Ingest into MyKB"
+    "default_title": "MyKB"
   },
   "background": {
     "scripts": ["background.js"]
