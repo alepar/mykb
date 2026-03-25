@@ -30,7 +30,7 @@ func DefaultConfigPath() string {
 // If path is empty, it tries DefaultConfigPath(). Missing files are silently ignored.
 func Load(path string) Config {
 	cfg := Config{
-		Host:        "localhost:9090",
+		Host:        "http://localhost:9091",
 		Lines:       5,
 		TopK:        10,
 		VectorDepth: 1000,

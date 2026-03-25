@@ -5,18 +5,18 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"golang.org/x/term"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	mykbv1 "mykb/gen/mykb/v1"
+	"mykb/gen/mykb/v1/mykbv1connect"
 	"mykb/internal/cliconfig"
 	"mykb/internal/tabs"
 	"mykb/internal/tui"
@@ -52,10 +52,6 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  mykb import-urls --file FILE [--force] [--quiet] [--host HOST]")
 }
 
-func connect(host string) (*grpc.ClientConn, error) {
-	return grpc.NewClient(host, grpc.WithTransportCredentials(insecure.NewCredentials()))
-}
-
 // --- ingest command ---
 
 func runIngest(args []string) {
@@ -76,15 +72,8 @@ func runIngest(args []string) {
 		cfg.Host = *host
 	}
 
-	conn, err := connect(cfg.Host)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	client := mykbv1.NewKBServiceClient(conn)
-	stream, err := client.IngestURL(context.Background(), &mykbv1.IngestURLRequest{Url: url, Force: *force})
+	client := mykbv1connect.NewKBServiceClient(http.DefaultClient, cfg.Host)
+	stream, err := client.IngestURL(context.Background(), connect.NewRequest(&mykbv1.IngestURLRequest{Url: url, Force: *force}))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -94,19 +83,8 @@ func runIngest(args []string) {
 	var stepStart time.Time
 	var progress strings.Builder
 
-	for {
-		msg, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			if *quiet {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			} else {
-				fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
-			}
-			os.Exit(1)
-		}
+	for stream.Receive() {
+		msg := stream.Msg()
 
 		if *quiet {
 			continue
@@ -124,6 +102,14 @@ func runIngest(args []string) {
 		}
 
 		fmt.Fprintf(os.Stderr, "\r%s", progress.String())
+	}
+	if err := stream.Err(); err != nil {
+		if *quiet {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
+		}
+		os.Exit(1)
 	}
 
 	if *quiet {
@@ -176,49 +162,42 @@ func runQuery(args []string) {
 		cfg.RerankDepth = *rerankDepth
 	}
 
-	conn, err := connect(cfg.Host)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
+	client := mykbv1connect.NewKBServiceClient(http.DefaultClient, cfg.Host)
 
-	client := mykbv1.NewKBServiceClient(conn)
-
-	resp, err := client.Query(context.Background(), &mykbv1.QueryRequest{
+	resp, err := client.Query(context.Background(), connect.NewRequest(&mykbv1.QueryRequest{
 		Query:       query,
 		TopK:        int32(cfg.TopK),
 		VectorDepth: int32(cfg.VectorDepth),
 		FtsDepth:    int32(cfg.FTSDepth),
 		RerankDepth: int32(cfg.RerankDepth),
 		NoMerge:     *noMerge,
-	})
+	}))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
-	if len(resp.Results) == 0 {
+	if len(resp.Msg.Results) == 0 {
 		fmt.Println("no results")
 		return
 	}
 
 	// Resolve document metadata (title, URL) via GetDocuments
-	docIDs := uniqueDocIDs(resp.Results)
-	docsResp, err := client.GetDocuments(context.Background(), &mykbv1.GetDocumentsRequest{
+	docIDs := uniqueDocIDs(resp.Msg.Results)
+	docsResp, err := client.GetDocuments(context.Background(), connect.NewRequest(&mykbv1.GetDocumentsRequest{
 		Ids: docIDs,
-	})
+	}))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error fetching documents: %v\n", err)
 		os.Exit(1)
 	}
-	docMap := make(map[string]*mykbv1.Document, len(docsResp.Documents))
-	for _, doc := range docsResp.Documents {
+	docMap := make(map[string]*mykbv1.Document, len(docsResp.Msg.Documents))
+	for _, doc := range docsResp.Msg.Documents {
 		docMap[doc.Id] = doc
 	}
 
 	// In merge mode, deduplicate by document (keep highest-scoring segment only).
-	results := resp.Results
+	results := resp.Msg.Results
 	if !*noMerge {
 		results = deduplicateByDocument(results)
 	}
@@ -478,33 +457,19 @@ func runImportURLs(args []string) {
 		cfg.Host = *host
 	}
 
-	conn, err := connect(cfg.Host)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	client := mykbv1.NewKBServiceClient(conn)
-	stream, err := client.IngestURLs(context.Background(), &mykbv1.IngestURLsRequest{
+	client := mykbv1connect.NewKBServiceClient(http.DefaultClient, cfg.Host)
+	stream, err := client.IngestURLs(context.Background(), connect.NewRequest(&mykbv1.IngestURLsRequest{
 		Urls:  urls,
 		Force: *force,
-	})
+	}))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
 	var done, errors, skipped int
-	for {
-		msg, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
-			os.Exit(1)
-		}
+	for stream.Receive() {
+		msg := stream.Msg()
 
 		switch msg.GetStage() {
 		case "done":
@@ -520,6 +485,10 @@ func runImportURLs(args []string) {
 				msg.GetCurrent(), msg.GetTotal(), msg.GetStage(), truncateURL(msg.GetUrl(), 60),
 				done, skipped, errors)
 		}
+	}
+	if err := stream.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
+		os.Exit(1)
 	}
 
 	if !*quiet {
