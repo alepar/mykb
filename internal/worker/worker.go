@@ -110,6 +110,9 @@ func (w *Worker) Start(ctx context.Context) {
 		}
 	}
 
+	// Launch periodic retry scanner in background.
+	go w.retryScanner(ctx)
+
 	// Launch batch coordinator.
 	batchSize := w.cfg.WorkerConcurrency
 	if batchSize < 1 {
@@ -124,6 +127,36 @@ func (w *Worker) Start(ctx context.Context) {
 		}
 
 		w.processBatch(ctx, batch)
+	}
+}
+
+// retryScanner periodically checks for documents whose next_retry_at has passed
+// and queues them back into the notify channel for reprocessing.
+func (w *Worker) retryScanner(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			docs, err := w.pg.GetPendingDocuments(ctx, w.cfg.MaxRetries)
+			if err != nil {
+				log.Printf("worker: retry scan failed: %v", err)
+				continue
+			}
+			if len(docs) > 0 {
+				log.Printf("worker: retry scan found %d documents to retry", len(docs))
+				for _, doc := range docs {
+					select {
+					case w.notify <- workItem{documentID: doc.ID}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}
 	}
 }
 
