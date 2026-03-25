@@ -1,7 +1,17 @@
-import { useState, FormEvent } from 'react';
+import { useState, useRef, useEffect, FormEvent } from 'react';
 import { query, getDocuments, QueryResult, Document } from '../api';
 import { ResultSidebar } from '../components/ResultSidebar';
 import { ResultDetail } from '../components/ResultDetail';
+
+function useIsMobile(breakpoint = 768) {
+  const [isMobile, setIsMobile] = useState(window.innerWidth < breakpoint);
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < breakpoint);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, [breakpoint]);
+  return isMobile;
+}
 
 export function QueryPage() {
   const [q, setQ] = useState('');
@@ -11,6 +21,15 @@ export function QueryPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [searched, setSearched] = useState(false);
+  const detailRef = useRef<HTMLDivElement>(null);
+  const isMobile = useIsMobile();
+
+  const handleSelect = (index: number) => {
+    setSelected(index);
+    if (isMobile && detailRef.current) {
+      detailRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -24,7 +43,6 @@ export function QueryPage() {
       setResults(items);
       setSelected(0);
 
-      // Fetch document metadata
       if (items.length > 0) {
         const uniqueIds = [...new Set(items.map(r => r.documentId))];
         const docsResp = await getDocuments(uniqueIds);
@@ -68,18 +86,36 @@ export function QueryPage() {
       )}
 
       {results.length > 0 && (
-        <div style={{ display: 'flex', height: 'calc(100vh - 200px)' }}>
-          <ResultSidebar
-            results={results}
-            docMap={docMap}
-            selected={selected}
-            onSelect={setSelected}
-          />
-          <ResultDetail
-            result={results[selected]}
-            doc={docMap[results[selected].documentId]}
-          />
-        </div>
+        isMobile ? (
+          <div>
+            <ResultSidebar
+              results={results}
+              docMap={docMap}
+              selected={selected}
+              onSelect={handleSelect}
+              compact
+            />
+            <div ref={detailRef}>
+              <ResultDetail
+                result={results[selected]}
+                doc={docMap[results[selected].documentId]}
+              />
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', height: 'calc(100vh - 200px)' }}>
+            <ResultSidebar
+              results={results}
+              docMap={docMap}
+              selected={selected}
+              onSelect={handleSelect}
+            />
+            <ResultDetail
+              result={results[selected]}
+              doc={docMap[results[selected].documentId]}
+            />
+          </div>
+        )
       )}
     </div>
   );
