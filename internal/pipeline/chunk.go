@@ -21,9 +21,10 @@ func (o ChunkOptions) withDefaults() ChunkOptions {
 	return o
 }
 
-// estimateTokens returns a rough token count: len/4.
+// estimateTokens returns a token count using the BPE tokenizer with
+// a Voyage AI multiplier. See tokencount.go for details.
 func estimateTokens(s string) int {
-	return len(s) / 4
+	return countTokens(s)
 }
 
 // separators is the hierarchy of split points, tried in order.

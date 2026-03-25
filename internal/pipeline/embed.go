@@ -124,26 +124,34 @@ func (e *Embedder) embedWithRetry(ctx context.Context, inputs [][]string, inputT
 	return nil, fmt.Errorf("embed failed after %d retries: %w", embedMaxRetries, lastErr)
 }
 
-// maxContextTokens is the conservative limit for the contextualized embedding
-// API's context window (actual limit is 32K, we leave headroom).
-const maxContextTokens = 20000
+// maxContextTokens is the limit for the contextualized embedding API's
+// context window (actual limit is 32K). With accurate BPE token counting
+// + 1.2x Voyage multiplier, we can use a tighter threshold.
+const maxContextTokens = 28000
 
 // maxChunkTokens is the limit for a single chunk. Chunks exceeding this
 // are truncated to fit within the contextualized embedding context window.
-const maxChunkTokens = 30000
+const maxChunkTokens = 28000
 
-// truncateChunk truncates a chunk to fit within maxChunkTokens.
+// truncateChunk truncates a chunk to fit within maxChunkTokens by
+// iteratively removing trailing content until the token count fits.
 func truncateChunk(text string) string {
-	if estimateTokens(text) <= maxChunkTokens {
+	tokens := estimateTokens(text)
+	if tokens <= maxChunkTokens {
 		return text
 	}
-	// estimateTokens uses len/4, so maxChunkTokens * 4 chars is the limit.
-	maxChars := maxChunkTokens * 4
-	if len(text) > maxChars {
-		text = text[:maxChars]
+	// Binary search for the right length.
+	// Start with a proportional estimate.
+	ratio := float64(maxChunkTokens) / float64(tokens)
+	maxChars := int(float64(len(text)) * ratio * 0.95) // 5% extra margin
+	if maxChars < 0 {
+		maxChars = 0
 	}
-	log.Printf("embed: truncated oversized chunk from %d to %d chars", len(text), maxChars)
-	return text
+	if maxChars > len(text) {
+		maxChars = len(text)
+	}
+	log.Printf("embed: truncating oversized chunk from %d to ~%d tokens (%d chars)", tokens, maxChunkTokens, maxChars)
+	return text[:maxChars]
 }
 
 // splitChunkBatches splits chunks into sub-batches where each sub-batch's
