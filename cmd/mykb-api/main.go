@@ -91,7 +91,7 @@ func main() {
 
 	// Mount Connect RPC handler
 	path, handler := mykbv1connect.NewKBServiceHandler(srv)
-	mux.Handle(path, corsMiddleware(handler))
+	mux.Handle(path, handler)
 
 	// Mount REST API routes
 	httpHandler := server.NewHTTPHandler(pg, w, fs)
@@ -105,7 +105,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
-		Handler: mux,
+		Handler: corsMiddleware(mux),
 	}
 
 	// Graceful shutdown
