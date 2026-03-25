@@ -94,7 +94,7 @@ func main() {
 	mux.Handle(path, corsMiddleware(handler))
 
 	// Mount REST API routes
-	httpHandler := server.NewHTTPHandler(pg, w)
+	httpHandler := server.NewHTTPHandler(pg, w, fs)
 	mux.Handle("/api/", httpHandler)
 
 	// Health check

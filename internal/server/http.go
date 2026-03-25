@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -22,10 +23,15 @@ type workerForHTTP interface {
 	Notify(documentID string)
 }
 
+// fsForHTTP is the subset of FilesystemStore used by the HTTP handler.
+type fsForHTTP interface {
+	WritePrefetchHTML(id string, html []byte) error
+}
+
 // NewHTTPHandler returns an http.Handler with all HTTP API routes registered.
-func NewHTTPHandler(pg pgForHTTP, w workerForHTTP) http.Handler {
+func NewHTTPHandler(pg pgForHTTP, w workerForHTTP, fs fsForHTTP) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/ingest", handleIngest(pg, w))
+	mux.HandleFunc("POST /api/ingest", handleIngest(pg, w, fs))
 	mux.HandleFunc("OPTIONS /api/ingest", handleCORSPreflight)
 	mux.HandleFunc("GET /api/ingest/{id}", handleIngestStatus(pg))
 	mux.HandleFunc("OPTIONS /api/ingest/{id}", handleCORSPreflight)
@@ -47,6 +53,7 @@ func handleCORSPreflight(w http.ResponseWriter, r *http.Request) {
 
 type ingestRequest struct {
 	URL   string `json:"url"`
+	HTML  string `json:"html"`
 	Force bool   `json:"force"`
 }
 
@@ -54,9 +61,10 @@ type ingestResponse struct {
 	ID string `json:"id"`
 }
 
-func handleIngest(pg pgForHTTP, w workerForHTTP) http.HandlerFunc {
+func handleIngest(pg pgForHTTP, w workerForHTTP, fs fsForHTTP) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		setCORSHeaders(rw)
+		r.Body = http.MaxBytesReader(rw, r.Body, 32<<20) // 32 MB limit
 
 		var req ingestRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -83,6 +91,12 @@ func handleIngest(pg pgForHTTP, w workerForHTTP) http.HandlerFunc {
 			}
 			http.Error(rw, "internal error", http.StatusInternalServerError)
 			return
+		}
+
+		if req.HTML != "" {
+			if err := fs.WritePrefetchHTML(doc.ID, []byte(req.HTML)); err != nil {
+				log.Printf("server: failed to write prefetch HTML for %s: %v", doc.ID, err)
+			}
 		}
 
 		w.Notify(doc.ID)
