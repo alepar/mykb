@@ -59,6 +59,20 @@ export async function getDocuments(ids: string[]): Promise<GetDocumentsResponse>
   return post('/mykb.v1.KBService/GetDocuments', { ids });
 }
 
+export interface StatusResponse {
+  document_counts: Record<string, number>;
+  total_chunks: number;
+}
+
+export async function getStatus(): Promise<StatusResponse> {
+  const resp = await fetch(`${API_BASE}/api/status`);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`${resp.status}: ${text}`);
+  }
+  return resp.json();
+}
+
 export async function ingestURL(url: string): Promise<{ id: string }> {
   const resp = await fetch(`${API_BASE}/api/ingest`, {
     method: 'POST',

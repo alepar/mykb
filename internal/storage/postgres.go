@@ -252,6 +252,31 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, limit, offset int) ([
 	return docs, total, nil
 }
 
+// StatusCounts returns the number of documents in each status and the total chunk count.
+func (s *PostgresStore) StatusCounts(ctx context.Context) (map[string]int, int, error) {
+	counts := make(map[string]int)
+	rows, err := s.pool.Query(ctx, `SELECT status, COUNT(*) FROM documents GROUP BY status`)
+	if err != nil {
+		return nil, 0, fmt.Errorf("status counts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, 0, fmt.Errorf("scan status count: %w", err)
+		}
+		counts[status] = count
+	}
+
+	var chunkCount int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM chunks`).Scan(&chunkCount); err != nil {
+		return nil, 0, fmt.Errorf("count chunks: %w", err)
+	}
+
+	return counts, chunkCount, nil
+}
+
 // DeleteDocument deletes a document by ID. Chunks are cascade-deleted via FK.
 func (s *PostgresStore) DeleteDocument(ctx context.Context, id string) error {
 	ct, err := s.pool.Exec(ctx, `DELETE FROM documents WHERE id = $1`, id)

@@ -1,16 +1,21 @@
 import { useEffect, useState } from 'react';
-import { listDocuments, Document } from '../api';
+import { listDocuments, getStatus, Document, StatusResponse } from '../api';
 
 export function StatusPage() {
   const [docs, setDocs] = useState<Document[]>([]);
   const [total, setTotal] = useState(0);
+  const [status, setStatus] = useState<StatusResponse | null>(null);
   const [error, setError] = useState('');
 
-  const fetchDocs = async () => {
+  const fetchData = async () => {
     try {
-      const resp = await listDocuments(20);
-      setDocs(resp.documents || []);
-      setTotal(resp.total || 0);
+      const [docsResp, statusResp] = await Promise.all([
+        listDocuments(20),
+        getStatus(),
+      ]);
+      setDocs(docsResp.documents || []);
+      setTotal(docsResp.total || 0);
+      setStatus(statusResp);
       setError('');
     } catch (e) {
       setError(String(e));
@@ -18,22 +23,28 @@ export function StatusPage() {
   };
 
   useEffect(() => {
-    fetchDocs();
-    const interval = setInterval(fetchDocs, 10000);
+    fetchData();
+    const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
   }, []);
 
-  // Count statuses from recent docs (approximate)
-  const statusCounts: Record<string, number> = {};
-  for (const doc of docs) {
-    statusCounts[doc.status] = (statusCounts[doc.status] || 0) + 1;
-  }
+  const counts = status?.document_counts || {};
+  const statuses = ['DONE', 'PENDING', 'CRAWLING', 'EMBEDDING', 'INDEXING', 'ERROR'];
 
   return (
     <>
       <h2>Status</h2>
       {error && <p style={{ color: 'red' }}>{error}</p>}
-      <p>Total documents: <strong>{total}</strong></p>
+
+      <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
+        <div><strong>Documents:</strong> {total}</div>
+        <div><strong>Chunks:</strong> {status?.total_chunks ?? '—'}</div>
+        {statuses.map(s => {
+          const count = counts[s];
+          if (!count) return null;
+          return <div key={s}><strong>{s}:</strong> {count}</div>;
+        })}
+      </div>
 
       <h3>Recent Documents</h3>
       <table>

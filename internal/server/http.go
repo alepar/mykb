@@ -14,6 +14,7 @@ type pgForHTTP interface {
 	InsertDocument(ctx context.Context, url string) (storage.Document, error)
 	GetDocument(ctx context.Context, id string) (storage.Document, error)
 	GetDocumentByURL(ctx context.Context, url string) (storage.Document, error)
+	StatusCounts(ctx context.Context) (map[string]int, int, error)
 }
 
 // workerForHTTP is the subset of Worker used by the HTTP handler.
@@ -28,6 +29,8 @@ func NewHTTPHandler(pg pgForHTTP, w workerForHTTP) http.Handler {
 	mux.HandleFunc("OPTIONS /api/ingest", handleCORSPreflight)
 	mux.HandleFunc("GET /api/ingest/{id}", handleIngestStatus(pg))
 	mux.HandleFunc("OPTIONS /api/ingest/{id}", handleCORSPreflight)
+	mux.HandleFunc("GET /api/status", handleStatus(pg))
+	mux.HandleFunc("OPTIONS /api/status", handleCORSPreflight)
 	return mux
 }
 
@@ -112,6 +115,29 @@ func handleIngestStatus(pg pgForHTTP) http.HandlerFunc {
 			ID:     doc.ID,
 			Status: doc.Status,
 			Error:  doc.Error,
+		})
+	}
+}
+
+type statusResponse struct {
+	DocumentCounts map[string]int `json:"document_counts"`
+	TotalChunks    int            `json:"total_chunks"`
+}
+
+func handleStatus(pg pgForHTTP) http.HandlerFunc {
+	return func(rw http.ResponseWriter, r *http.Request) {
+		setCORSHeaders(rw)
+
+		counts, chunks, err := pg.StatusCounts(r.Context())
+		if err != nil {
+			http.Error(rw, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(statusResponse{
+			DocumentCounts: counts,
+			TotalChunks:    chunks,
 		})
 	}
 }
