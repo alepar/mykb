@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -56,27 +57,84 @@ func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 	return &PostgresStore{pool: pool}, nil
 }
 
-// RunMigrations reads the embedded migration SQL files and executes them if the
-// documents table does not yet exist.
+// RunMigrations applies embedded SQL migrations in sorted order, tracking
+// applied migrations in a schema_migrations table.
 func (s *PostgresStore) RunMigrations(ctx context.Context) error {
-	var exists bool
-	err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'documents')`,
-	).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("check tables: %w", err)
-	}
-	if exists {
-		return nil
+	// Create tracking table if it doesn't exist.
+	if _, err := s.pool.Exec(ctx,
+		`CREATE TABLE IF NOT EXISTS schema_migrations (
+			filename TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
-	sql, err := migrationFS.ReadFile("migrations/001_init.sql")
+	// If documents table already exists but 001_init.sql isn't recorded,
+	// seed it. This handles databases created before schema_migrations.
+	var docExists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'documents')`,
+	).Scan(&docExists); err != nil {
+		return fmt.Errorf("check documents table: %w", err)
+	}
+	if docExists {
+		if _, err := s.pool.Exec(ctx,
+			`INSERT INTO schema_migrations (filename) VALUES ('001_init.sql') ON CONFLICT DO NOTHING`,
+		); err != nil {
+			return fmt.Errorf("seed 001_init.sql: %w", err)
+		}
+	}
+
+	// Read all migration files (embed.FS returns them sorted by name).
+	entries, err := migrationFS.ReadDir("migrations")
 	if err != nil {
-		return fmt.Errorf("read migration: %w", err)
+		return fmt.Errorf("read migrations dir: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx, string(sql)); err != nil {
-		return fmt.Errorf("exec migration: %w", err)
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+
+		// Skip if already applied.
+		var applied bool
+		if err := s.pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE filename = $1)`,
+			name).Scan(&applied); err != nil {
+			return fmt.Errorf("check migration %s: %w", name, err)
+		}
+		if applied {
+			continue
+		}
+
+		// Read and apply.
+		sql, err := migrationFS.ReadFile("migrations/" + name)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", name, err)
+		}
+
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin tx for %s: %w", name, err)
+		}
+		defer tx.Rollback(ctx)
+
+		if _, err := tx.Exec(ctx, string(sql)); err != nil {
+			return fmt.Errorf("apply migration %s: %w", name, err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO schema_migrations (filename) VALUES ($1)`, name,
+		); err != nil {
+			return fmt.Errorf("record migration %s: %w", name, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit migration %s: %w", name, err)
+		}
+
+		log.Printf("storage: applied migration %s", name)
 	}
+
 	return nil
 }
 

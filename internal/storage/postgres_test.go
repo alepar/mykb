@@ -122,7 +122,7 @@ func TestSetDocumentError(t *testing.T) {
 	ctx := context.Background()
 
 	doc, _ := store.InsertDocument(ctx, "https://example.com/err")
-	if err := store.SetDocumentError(ctx, doc.ID, "boom"); err != nil {
+	if err := store.SetDocumentError(ctx, doc.ID, "boom", 3); err != nil {
 		t.Fatalf("SetDocumentError: %v", err)
 	}
 
@@ -146,7 +146,7 @@ func TestClearDocumentError(t *testing.T) {
 	ctx := context.Background()
 
 	doc, _ := store.InsertDocument(ctx, "https://example.com/clr")
-	_ = store.SetDocumentError(ctx, doc.ID, "fail")
+	_ = store.SetDocumentError(ctx, doc.ID, "fail", 3)
 	if err := store.ClearDocumentError(ctx, doc.ID); err != nil {
 		t.Fatalf("ClearDocumentError: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestGetPendingDocuments(t *testing.T) {
 
 	// Doc with error but retry eligible (next_retry_at in past).
 	retryable, _ := store.InsertDocument(ctx, "https://example.com/retryable")
-	_ = store.SetDocumentError(ctx, retryable.ID, "transient")
+	_ = store.SetDocumentError(ctx, retryable.ID, "transient", 3)
 	// Force next_retry_at to past so it's eligible.
 	_, _ = store.pool.Exec(ctx,
 		`UPDATE documents SET next_retry_at = now() - interval '1 hour' WHERE id = $1`,
@@ -179,7 +179,7 @@ func TestGetPendingDocuments(t *testing.T) {
 	// Doc with error over max retries.
 	overMax, _ := store.InsertDocument(ctx, "https://example.com/overmax")
 	for i := 0; i < 5; i++ {
-		_ = store.SetDocumentError(ctx, overMax.ID, "fail")
+		_ = store.SetDocumentError(ctx, overMax.ID, "fail", 3)
 	}
 	// Force next_retry_at to past.
 	_, _ = store.pool.Exec(ctx,
@@ -315,6 +315,25 @@ func TestListDocuments(t *testing.T) {
 	docs2, _, _ := store.ListDocuments(ctx, 2, 2)
 	if len(docs2) != 2 {
 		t.Fatalf("page 2 len = %d, want 2", len(docs2))
+	}
+}
+
+func TestRunMigrations_Idempotent(t *testing.T) {
+	store := newTestStore(t) // calls RunMigrations internally
+	ctx := context.Background()
+
+	// schema_migrations table should exist with recorded entries.
+	var count int
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
+		t.Fatalf("query schema_migrations: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("expected migrations to be recorded")
+	}
+
+	// Running again should be idempotent.
+	if err := store.RunMigrations(ctx); err != nil {
+		t.Fatalf("RunMigrations (idempotent): %v", err)
 	}
 }
 
