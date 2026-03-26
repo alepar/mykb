@@ -204,7 +204,11 @@ func main() {
 	searcher := search.NewHybridSearcher(embedder, qdrant, meili, reranker, fs, cfg)
 
 	// Worker
-	w := worker.NewWorker(pg, fs, crawler, embedder, indexer, cfg)
+	hostname, _ := os.Hostname()
+	workerID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
+	log.Printf("worker ID: %s", workerID)
+
+	w := worker.NewWorker(pg, fs, crawler, embedder, indexer, cfg, workerID)
 	go w.Start(ctx)
 
 	// HTTP server with Connect handler + REST API

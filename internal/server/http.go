@@ -122,6 +122,8 @@ func handleIngest(pg pgForHTTP, w workerForHTTP, fs fsForHTTP) http.HandlerFunc 
 type ingestStatusResponse struct {
 	ID     string  `json:"id"`
 	Status string  `json:"status"`
+	Step   string  `json:"step"`
+	State  string  `json:"state"`
 	Error  *string `json:"error"`
 }
 
@@ -139,7 +141,9 @@ func handleIngestStatus(pg pgForHTTP) http.HandlerFunc {
 		rw.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(rw).Encode(ingestStatusResponse{
 			ID:     doc.ID,
-			Status: doc.Status,
+			Status: doc.DisplayStatus(),
+			Step:   doc.Step,
+			State:  doc.State,
 			Error:  doc.Error,
 		})
 	}

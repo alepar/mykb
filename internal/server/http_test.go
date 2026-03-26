@@ -34,6 +34,12 @@ func (m *mockPG) GetDocumentByURL(_ context.Context, _ string) (storage.Document
 	return m.getByURLDoc, m.getByURLErr
 }
 
+func (m *mockPG) DeleteDocument(_ context.Context, _ string) error { return nil }
+
+func (m *mockPG) StatusCounts(_ context.Context) (map[string]int, int, error) {
+	return nil, 0, nil
+}
+
 // mockWorker is a test double for workerForHTTP.
 type mockWorker struct {
 	notifiedIDs []string
@@ -43,12 +49,17 @@ func (m *mockWorker) Notify(documentID string) {
 	m.notifiedIDs = append(m.notifiedIDs, documentID)
 }
 
+// mockFS is a test double for fsForHTTP.
+type mockFS struct{}
+
+func (m *mockFS) WritePrefetchHTML(_ string, _ []byte) error { return nil }
+
 func TestHandleIngest(t *testing.T) {
 	pg := &mockPG{
-		insertDoc: storage.Document{ID: "doc-123", Status: "pending"},
+		insertDoc: storage.Document{ID: "doc-123", Step: "CRAWLING", State: "QUEUED"},
 	}
 	w := &mockWorker{}
-	handler := NewHTTPHandler(pg, w)
+	handler := NewHTTPHandler(pg, w, &mockFS{})
 
 	body, _ := json.Marshal(map[string]interface{}{"url": "https://example.com"})
 	req := httptest.NewRequest(http.MethodPost, "/api/ingest", bytes.NewReader(body))
@@ -79,13 +90,13 @@ func TestHandleIngest(t *testing.T) {
 }
 
 func TestHandleIngest_Duplicate(t *testing.T) {
-	existingDoc := storage.Document{ID: "existing-456", Status: "done"}
+	existingDoc := storage.Document{ID: "existing-456", Step: "DONE", State: "COMPLETED"}
 	pg := &mockPG{
 		insertErr:   fmt.Errorf("insert document: ERROR: duplicate key value violates unique constraint"),
 		getByURLDoc: existingDoc,
 	}
 	w := &mockWorker{}
-	handler := NewHTTPHandler(pg, w)
+	handler := NewHTTPHandler(pg, w, &mockFS{})
 
 	body, _ := json.Marshal(map[string]interface{}{"url": "https://example.com/existing"})
 	req := httptest.NewRequest(http.MethodPost, "/api/ingest", bytes.NewReader(body))
@@ -114,9 +125,9 @@ func TestHandleIngest_Duplicate(t *testing.T) {
 func TestHandleIngestStatus(t *testing.T) {
 	t.Run("normal status", func(t *testing.T) {
 		pg := &mockPG{
-			getDoc: storage.Document{ID: "doc-789", Status: "processing"},
+			getDoc: storage.Document{ID: "doc-789", Step: "EMBEDDING", State: "PROCESSING"},
 		}
-		handler := NewHTTPHandler(pg, &mockWorker{})
+		handler := NewHTTPHandler(pg, &mockWorker{}, &mockFS{})
 
 		req := httptest.NewRequest(http.MethodGet, "/api/ingest/doc-789", nil)
 		rec := httptest.NewRecorder()
@@ -134,8 +145,8 @@ func TestHandleIngestStatus(t *testing.T) {
 		if resp.ID != "doc-789" {
 			t.Errorf("expected ID doc-789, got %q", resp.ID)
 		}
-		if resp.Status != "processing" {
-			t.Errorf("expected status processing, got %q", resp.Status)
+		if resp.Status != "EMBEDDING" {
+			t.Errorf("expected status EMBEDDING, got %q", resp.Status)
 		}
 		if resp.Error != nil {
 			t.Errorf("expected nil error, got %v", resp.Error)
@@ -145,9 +156,9 @@ func TestHandleIngestStatus(t *testing.T) {
 	t.Run("status with error", func(t *testing.T) {
 		errMsg := "crawl failed: timeout"
 		pg := &mockPG{
-			getDoc: storage.Document{ID: "doc-err", Status: "error", Error: &errMsg},
+			getDoc: storage.Document{ID: "doc-err", Step: "CRAWLING", State: "FAILED", Error: &errMsg},
 		}
-		handler := NewHTTPHandler(pg, &mockWorker{})
+		handler := NewHTTPHandler(pg, &mockWorker{}, &mockFS{})
 
 		req := httptest.NewRequest(http.MethodGet, "/api/ingest/doc-err", nil)
 		rec := httptest.NewRecorder()
@@ -174,7 +185,7 @@ func TestHandleIngestStatus(t *testing.T) {
 		pg := &mockPG{
 			getErr: fmt.Errorf("get document: no rows in result set"),
 		}
-		handler := NewHTTPHandler(pg, &mockWorker{})
+		handler := NewHTTPHandler(pg, &mockWorker{}, &mockFS{})
 
 		req := httptest.NewRequest(http.MethodGet, "/api/ingest/nonexistent", nil)
 		rec := httptest.NewRecorder()
