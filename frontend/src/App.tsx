@@ -8,7 +8,7 @@ export function App() {
   return (
     <BrowserRouter>
       <Nav />
-      <main className="container" style={{ maxWidth: '1400px' }}>
+      <main className="max-w-7xl mx-auto px-4 py-4">
         <Routes>
           <Route path="/" element={<StatusPage />} />
           <Route path="/ingest" element={<IngestPage />} />

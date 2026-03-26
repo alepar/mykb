@@ -19,7 +19,7 @@ function domain(url: string): string {
 export function ResultSidebar({ results, docMap, selected, onSelect, compact }: Props) {
   if (compact) {
     return (
-      <div style={{ borderBottom: '1px solid var(--pico-muted-border-color)', marginBottom: '0.5rem', paddingBottom: '0.5rem' }}>
+      <div className="border-b border-gray-200 dark:border-gray-700 mb-2 pb-2">
         {results.map((r, i) => {
           const doc = docMap[r.documentId];
           const title = doc?.title || r.documentId;
@@ -28,20 +28,14 @@ export function ResultSidebar({ results, docMap, selected, onSelect, compact }: 
             <div
               key={`${r.documentId}-${r.chunkIndex}`}
               onClick={() => onSelect(i)}
-              style={{
-                padding: '0.35rem 0.5rem',
-                cursor: 'pointer',
-                borderRadius: '4px',
-                backgroundColor: isActive ? 'var(--pico-primary-background)' : 'transparent',
-                color: isActive ? 'var(--pico-primary-inverse)' : 'inherit',
-                fontSize: '0.85rem',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
+              className={`px-2 py-1 cursor-pointer rounded text-sm truncate ${
+                isActive
+                  ? 'bg-blue-600 text-white'
+                  : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+              }`}
             >
-              <span style={{ color: isActive ? 'inherit' : 'var(--pico-del-color)' }}>#{i + 1}</span>{' '}
-              <span style={{ opacity: 0.7 }}>{r.score.toFixed(2)}</span>{' '}
+              <span className={isActive ? '' : 'text-gray-400'}>#{i + 1}</span>{' '}
+              <span className="opacity-70">{r.score.toFixed(2)}</span>{' '}
               {title}
             </div>
           );
@@ -51,7 +45,7 @@ export function ResultSidebar({ results, docMap, selected, onSelect, compact }: 
   }
 
   return (
-    <aside style={{ width: '300px', minWidth: '300px', borderRight: '1px solid var(--pico-muted-border-color)', overflowY: 'auto', padding: '0.5rem' }}>
+    <aside className="w-72 min-w-72 border-r border-gray-200 dark:border-gray-700 overflow-y-auto p-2">
       {results.map((r, i) => {
         const doc = docMap[r.documentId];
         const title = doc?.title || r.documentId;
@@ -61,21 +55,18 @@ export function ResultSidebar({ results, docMap, selected, onSelect, compact }: 
           <div
             key={`${r.documentId}-${r.chunkIndex}`}
             onClick={() => onSelect(i)}
-            style={{
-              padding: '0.5rem',
-              cursor: 'pointer',
-              borderRadius: '4px',
-              backgroundColor: isActive ? 'var(--pico-primary-background)' : 'transparent',
-              color: isActive ? 'var(--pico-primary-inverse)' : 'inherit',
-              marginBottom: '0.25rem',
-            }}
+            className={`p-2 cursor-pointer rounded mb-1 ${
+              isActive
+                ? 'bg-blue-600 text-white'
+                : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+            }`}
           >
-            <div style={{ fontSize: '0.8rem' }}>
-              <span style={{ color: isActive ? 'inherit' : 'var(--pico-del-color)' }}>#{i + 1}</span>{' '}
-              <span style={{ opacity: 0.7 }}>{`{${r.score.toFixed(2)}}`}</span>{' '}
+            <div className="text-xs">
+              <span className={isActive ? '' : 'text-gray-400'}>#{i + 1}</span>{' '}
+              <span className="opacity-70">{`{${r.score.toFixed(2)}}`}</span>{' '}
               <span>{host}</span>
             </div>
-            <div style={{ fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <div className="text-sm truncate">
               {title}
             </div>
           </div>

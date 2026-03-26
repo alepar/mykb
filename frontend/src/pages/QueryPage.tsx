@@ -64,25 +64,28 @@ export function QueryPage() {
 
   return (
     <div>
-      <form onSubmit={handleSubmit} style={{ marginBottom: '1rem' }}>
-        <fieldset role="group">
-          <input
-            type="text"
-            placeholder="Search your knowledge base..."
-            value={q}
-            onChange={e => setQ(e.target.value)}
-            required
-          />
-          <button type="submit" disabled={loading} aria-busy={loading}>
-            {loading ? 'Searching...' : 'Search'}
-          </button>
-        </fieldset>
+      <form onSubmit={handleSubmit} className="flex gap-2 mb-4">
+        <input
+          type="text"
+          placeholder="Search your knowledge base..."
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          required
+          className="flex-1 rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button
+          type="submit"
+          disabled={loading}
+          className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+        >
+          {loading ? 'Searching...' : 'Search'}
+        </button>
       </form>
 
-      {error && <p style={{ color: 'red' }}>{error}</p>}
+      {error && <p className="text-red-500">{error}</p>}
 
       {searched && results.length === 0 && !loading && !error && (
-        <p>No results found.</p>
+        <p className="text-gray-500">No results found.</p>
       )}
 
       {results.length > 0 && (
@@ -103,7 +106,7 @@ export function QueryPage() {
             </div>
           </div>
         ) : (
-          <div style={{ display: 'flex', height: 'calc(100vh - 200px)' }}>
+          <div className="flex" style={{ height: 'calc(100vh - 200px)' }}>
             <ResultSidebar
               results={results}
               docMap={docMap}

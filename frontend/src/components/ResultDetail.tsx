@@ -28,22 +28,22 @@ export function ResultDetail({ result, doc }: Props) {
   const updated = doc ? formatDate(doc.updatedAt) : '';
 
   return (
-    <div style={{ flex: 1, padding: '1rem', overflowY: 'auto' }}>
+    <div className="flex-1 p-4 overflow-y-auto">
       {/* Header */}
-      <div style={{ marginBottom: '1rem', borderBottom: '1px solid var(--pico-muted-border-color)', paddingBottom: '0.5rem' }}>
-        <h3 style={{ margin: 0 }}>
+      <div className="mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+        <h3 className="text-lg font-semibold m-0">
           {url ? <a href={url} target="_blank" rel="noopener">{title}</a> : title}
         </h3>
-        {url && <div style={{ fontSize: '0.85rem', color: 'var(--pico-muted-color)' }}>{url}</div>}
-        <div style={{ fontSize: '0.8rem', color: 'var(--pico-muted-color)' }}>
+        {url && <div className="text-sm text-gray-500 dark:text-gray-400">{url}</div>}
+        <div className="text-xs text-gray-500 dark:text-gray-400">
           {pos && <span>Chunks {pos}</span>}
-          {created && <span style={{ marginLeft: '1rem' }}>Added {created}</span>}
-          {updated && <span style={{ marginLeft: '1rem' }}>Ingested {updated}</span>}
+          {created && <span className="ml-4">Added {created}</span>}
+          {updated && <span className="ml-4">Ingested {updated}</span>}
         </div>
       </div>
 
       {/* Markdown body */}
-      <article>
+      <article className="prose dark:prose-invert max-w-none">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>
           {result.text}
         </ReactMarkdown>
