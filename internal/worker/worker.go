@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,13 +31,14 @@ type workItem struct {
 // Worker is the core pipeline orchestrator that processes documents through
 // all ingestion stages: crawl, chunk, embed, and index.
 type Worker struct {
-	pg      *storage.PostgresStore
-	fs      *storage.FilesystemStore
-	crawler *pipeline.Crawler
+	pg       *storage.PostgresStore
+	fs       *storage.FilesystemStore
+	crawler  *pipeline.Crawler
 	embedder *pipeline.Embedder
-	indexer *pipeline.Indexer
-	cfg     *config.Config
-	notify  chan workItem
+	indexer  *pipeline.Indexer
+	cfg      *config.Config
+	notify   chan workItem
+	workerID string
 }
 
 // NewWorker creates a Worker wired to all pipeline components.
@@ -47,15 +49,17 @@ func NewWorker(
 	embedder *pipeline.Embedder,
 	indexer *pipeline.Indexer,
 	cfg *config.Config,
+	workerID string,
 ) *Worker {
 	return &Worker{
-		pg:      pg,
-		fs:      fs,
-		crawler: crawler,
+		pg:       pg,
+		fs:       fs,
+		crawler:  crawler,
 		embedder: embedder,
-		indexer: indexer,
-		cfg:     cfg,
-		notify:  make(chan workItem, 8192),
+		indexer:  indexer,
+		cfg:      cfg,
+		notify:   make(chan workItem, 8192),
+		workerID: workerID,
 	}
 }
 
@@ -152,6 +156,13 @@ func (w *Worker) retryScanner(ctx context.Context) {
 				}
 			}
 
+			// Abandon stale documents before scanning for retries.
+			if count, err := w.pg.AbandonStaleDocuments(ctx, 5*time.Minute); err != nil {
+				log.Printf("worker: abandon stale failed: %v", err)
+			} else if count > 0 {
+				log.Printf("worker: abandoned %d stale documents", count)
+			}
+
 			docs, err := w.pg.GetPendingDocuments(ctx, w.cfg.MaxRetries)
 			if err != nil {
 				log.Printf("worker: retry scan failed: %v", err)
@@ -177,62 +188,87 @@ func (w *Worker) retryScanner(ctx context.Context) {
 	}
 }
 
-// ProcessDocument fetches a document from Postgres and runs it through the
-// pipeline stages, resuming from whatever status it is currently in.
+// ProcessDocument claims a document and runs it through the pipeline stages,
+// resuming from whatever step it is currently in.
 // The progress channel may be nil if no listener is attached.
 func (w *Worker) ProcessDocument(ctx context.Context, docID string, progress chan<- ProgressUpdate) error {
-	doc, err := w.pg.GetDocument(ctx, docID)
+	claimed, doc, err := w.pg.ClaimDocument(ctx, docID, w.workerID)
 	if err != nil {
-		return fmt.Errorf("get document: %w", err)
+		return fmt.Errorf("claim document: %w", err)
 	}
-
-	// Clear error if retrying.
-	if doc.Error != nil {
-		if err := w.pg.ClearDocumentError(ctx, docID); err != nil {
-			return fmt.Errorf("clear document error: %w", err)
-		}
+	if !claimed {
+		return nil // another worker has it or it's already done
 	}
+	return w.processDocumentStages(ctx, doc, progress)
+}
 
-	// vectors holds embedding results produced during doEmbed so doIndex
-	// can use them without re-embedding. Keyed by chunk ID.
+// processDocumentStages runs a claimed document through pipeline stages,
+// resuming from its current step. The document must already be in
+// PROCESSING state (claimed).
+func (w *Worker) processDocumentStages(ctx context.Context, doc storage.Document, progress chan<- ProgressUpdate) error {
 	vectors := make(map[string][]float32)
 
-	// Resume from current status.
-	switch doc.Status {
-	case "PENDING":
-		fallthrough
+	switch doc.Step {
 	case "CRAWLING":
 		if err := w.doCrawl(ctx, &doc, progress); err != nil {
-			return w.handleError(ctx, docID, err)
+			return w.failDocument(ctx, doc.ID, "CRAWLING", err)
+		}
+		if err := w.pg.AdvanceStep(ctx, doc.ID, "CHUNKING"); err != nil {
+			return fmt.Errorf("advance to CHUNKING: %w", err)
 		}
 		fallthrough
 	case "CHUNKING":
 		if err := w.doChunk(ctx, &doc, progress); err != nil {
-			return w.handleError(ctx, docID, err)
+			return w.failDocument(ctx, doc.ID, "CHUNKING", err)
+		}
+		if err := w.pg.AdvanceStep(ctx, doc.ID, "EMBEDDING"); err != nil {
+			return fmt.Errorf("advance to EMBEDDING: %w", err)
 		}
 		fallthrough
 	case "EMBEDDING":
 		if err := w.doEmbed(ctx, &doc, progress, vectors); err != nil {
-			return w.handleError(ctx, docID, err)
+			return w.failDocument(ctx, doc.ID, "EMBEDDING", err)
+		}
+		if err := w.pg.AdvanceStep(ctx, doc.ID, "INDEXING"); err != nil {
+			return fmt.Errorf("advance to INDEXING: %w", err)
 		}
 		fallthrough
 	case "INDEXING":
 		if err := w.doIndex(ctx, &doc, progress, vectors); err != nil {
-			return w.handleError(ctx, docID, err)
+			return w.failDocument(ctx, doc.ID, "INDEXING", err)
+		}
+		if err := w.pg.CompleteDocument(ctx, doc.ID); err != nil {
+			return fmt.Errorf("complete document: %w", err)
 		}
 	case "DONE":
 		return nil
 	}
-
 	return nil
+}
+
+// failDocument records a failure on the document and returns the original error.
+func (w *Worker) failDocument(ctx context.Context, docID, step string, err error) error {
+	retriable := !isPermanentError(err)
+	if setErr := w.pg.FailDocument(ctx, docID, step, err.Error(), retriable, w.cfg.MaxRetries); setErr != nil {
+		log.Printf("worker: failed to record failure on document %s: %v", docID, setErr)
+	}
+	return err
+}
+
+// isPermanentError returns true for errors that should not be retried.
+func isPermanentError(err error) bool {
+	msg := err.Error()
+	if strings.Contains(msg, "no such host") || strings.Contains(msg, "invalid URL") {
+		return true
+	}
+	if strings.Contains(msg, "too many tokens") {
+		return true
+	}
+	return false
 }
 
 // doCrawl fetches the URL content via the crawler and stores the result.
 func (w *Worker) doCrawl(ctx context.Context, doc *storage.Document, progress chan<- ProgressUpdate) error {
-	if err := w.pg.UpdateDocumentStatus(ctx, doc.ID, "CRAWLING"); err != nil {
-		return fmt.Errorf("set status CRAWLING: %w", err)
-	}
-
 	var result pipeline.CrawlResult
 	var err error
 	if html, readErr := w.fs.ReadPrefetchHTML(doc.ID); readErr == nil {
@@ -280,10 +316,6 @@ func (w *Worker) doCrawl(ctx context.Context, doc *storage.Document, progress ch
 // saveCrawlResult persists a crawl result (markdown, title, crawled_at) and sends progress.
 // Used by the batch coordinator after CrawlBatch returns.
 func (w *Worker) saveCrawlResult(ctx context.Context, doc *storage.Document, result pipeline.CrawlResult, progress chan<- ProgressUpdate) error {
-	if err := w.pg.UpdateDocumentStatus(ctx, doc.ID, "CRAWLING"); err != nil {
-		return fmt.Errorf("set status CRAWLING: %w", err)
-	}
-
 	if err := w.fs.WriteDocument(doc.ID, []byte(result.Markdown)); err != nil {
 		return fmt.Errorf("write document: %w", err)
 	}
@@ -315,10 +347,6 @@ func (w *Worker) saveCrawlResult(ctx context.Context, doc *storage.Document, res
 
 // doChunk reads the document content, splits it into chunks, and stores them.
 func (w *Worker) doChunk(ctx context.Context, doc *storage.Document, progress chan<- ProgressUpdate) error {
-	if err := w.pg.UpdateDocumentStatus(ctx, doc.ID, "CHUNKING"); err != nil {
-		return fmt.Errorf("set status CHUNKING: %w", err)
-	}
-
 	// Delete existing chunks on resume to avoid unique constraint violations.
 	if err := w.pg.DeleteChunksByDocument(ctx, doc.ID); err != nil {
 		return fmt.Errorf("delete existing chunks: %w", err)
@@ -363,10 +391,6 @@ func (w *Worker) doChunk(ctx context.Context, doc *storage.Document, progress ch
 // doEmbed reads all chunks, sends them together to the contextualized
 // embedding API, and stores the resulting vectors.
 func (w *Worker) doEmbed(ctx context.Context, doc *storage.Document, progress chan<- ProgressUpdate, vectors map[string][]float32) error {
-	if err := w.pg.UpdateDocumentStatus(ctx, doc.ID, "EMBEDDING"); err != nil {
-		return fmt.Errorf("set status EMBEDDING: %w", err)
-	}
-
 	chunks, err := w.pg.GetChunksByDocument(ctx, doc.ID)
 	if err != nil {
 		return fmt.Errorf("get chunks: %w", err)
@@ -421,10 +445,6 @@ func (w *Worker) doEmbed(ctx context.Context, doc *storage.Document, progress ch
 // Meilisearch via the indexer. If vectors are not available in memory (resume
 // scenario), the chunks are re-embedded first.
 func (w *Worker) doIndex(ctx context.Context, doc *storage.Document, progress chan<- ProgressUpdate, vectors map[string][]float32) error {
-	if err := w.pg.UpdateDocumentStatus(ctx, doc.ID, "INDEXING"); err != nil {
-		return fmt.Errorf("set status INDEXING: %w", err)
-	}
-
 	chunks, err := w.pg.GetChunksByDocumentAndStatus(ctx, doc.ID, "EMBEDDED")
 	if err != nil {
 		return fmt.Errorf("get embedded chunks: %w", err)
@@ -432,9 +452,6 @@ func (w *Worker) doIndex(ctx context.Context, doc *storage.Document, progress ch
 
 	if len(chunks) == 0 {
 		// All chunks already indexed; just finalize.
-		if err := w.pg.UpdateDocumentStatus(ctx, doc.ID, "DONE"); err != nil {
-			return fmt.Errorf("set status DONE: %w", err)
-		}
 		sendProgress(progress, ProgressUpdate{
 			DocumentID: doc.ID,
 			Status:     "DONE",
@@ -499,11 +516,6 @@ func (w *Worker) doIndex(ctx context.Context, doc *storage.Document, progress ch
 		}
 	}
 
-	// Finalize document.
-	if err := w.pg.UpdateDocumentStatus(ctx, doc.ID, "DONE"); err != nil {
-		return fmt.Errorf("set status DONE: %w", err)
-	}
-
 	allChunks, err := w.pg.GetChunksByDocument(ctx, doc.ID)
 	if err != nil {
 		return fmt.Errorf("get all chunks: %w", err)
@@ -518,14 +530,6 @@ func (w *Worker) doIndex(ctx context.Context, doc *storage.Document, progress ch
 	})
 
 	return nil
-}
-
-// handleError records the error on the document and returns it.
-func (w *Worker) handleError(ctx context.Context, docID string, err error) error {
-	if setErr := w.pg.SetDocumentError(ctx, docID, err.Error(), w.cfg.MaxRetries); setErr != nil {
-		log.Printf("worker: failed to set error on document %s: %v", docID, setErr)
-	}
-	return err
 }
 
 // pullBatch drains up to maxSize items from the notify channel.
@@ -557,18 +561,21 @@ func (w *Worker) pullBatch(ctx context.Context, maxSize int) []workItem {
 	return batch
 }
 
-// processBatch crawls a batch of URLs together, then chunks and fans out embed+index.
+// processBatch claims documents, batch-crawls fresh ones, and fans out embed+index.
 func (w *Worker) processBatch(ctx context.Context, batch []workItem) {
-	// Load documents from postgres.
 	type batchDoc struct {
 		item workItem
 		doc  storage.Document
 	}
-	var docs []batchDoc
+
+	var freshDocs []batchDoc  // step=CRAWLING, need batch crawl
+	var resumeDocs []batchDoc // step past CRAWLING, resume from current step
+
+	// Phase 1: Claim all documents.
 	for _, item := range batch {
-		doc, err := w.pg.GetDocument(ctx, item.documentID)
+		claimed, doc, err := w.pg.ClaimDocument(ctx, item.documentID, w.workerID)
 		if err != nil {
-			log.Printf("worker: failed to get document %s: %v", item.documentID, err)
+			log.Printf("worker: failed to claim document %s: %v", item.documentID, err)
 			if item.progress != nil {
 				sendProgress(item.progress, ProgressUpdate{
 					DocumentID: item.documentID, Status: "ERROR", Message: err.Error(),
@@ -577,178 +584,213 @@ func (w *Worker) processBatch(ctx context.Context, batch []workItem) {
 			}
 			continue
 		}
-		if doc.Error != nil {
-			if err := w.pg.ClearDocumentError(ctx, doc.ID); err != nil {
-				log.Printf("worker: failed to clear error on document %s: %v", doc.ID, err)
+		if !claimed {
+			if item.progress != nil {
+				close(item.progress)
 			}
+			continue
 		}
-		docs = append(docs, batchDoc{item: item, doc: doc})
+
+		if doc.Step == "CRAWLING" {
+			freshDocs = append(freshDocs, batchDoc{item: item, doc: doc})
+		} else {
+			resumeDocs = append(resumeDocs, batchDoc{item: item, doc: doc})
+		}
 	}
 
-	if len(docs) == 0 {
+	if len(freshDocs) == 0 && len(resumeDocs) == 0 {
 		return
 	}
 
-	// Separate Reddit URLs from regular URLs.
-	var regularDocs []batchDoc
-	var redditDocs []batchDoc
-	for _, bd := range docs {
-		if pipeline.IsRedditURL(bd.doc.URL) {
-			redditDocs = append(redditDocs, bd)
-		} else {
-			regularDocs = append(regularDocs, bd)
-		}
-	}
+	var wg sync.WaitGroup
 
-	// Separate prefetch HTML docs from regular docs.
-	var prefetchDocs []batchDoc
-	var regularDocsFiltered []batchDoc
-	for _, bd := range regularDocs {
-		hasPrefetch := w.fs.HasPrefetchHTML(bd.doc.ID)
-		log.Printf("worker: checking prefetch for %s (id=%s): %v", bd.doc.URL, bd.doc.ID, hasPrefetch)
-		if hasPrefetch {
-			prefetchDocs = append(prefetchDocs, bd)
-		} else {
-			regularDocsFiltered = append(regularDocsFiltered, bd)
-		}
-	}
-	regularDocs = regularDocsFiltered
-
-	// Crawl regular URLs in batch, Reddit URLs individually — all concurrently.
-	crawlResults := make(map[string]pipeline.CrawlResult)
-	crawlErrors := make(map[string]error)
-	var crawlWg sync.WaitGroup
-
-	if len(regularDocs) > 0 {
-		crawlWg.Add(1)
-		go func() {
-			defer crawlWg.Done()
-			urls := make([]string, len(regularDocs))
-			for i, bd := range regularDocs {
-				urls[i] = bd.doc.URL
-			}
-			log.Printf("worker: batch crawling %d URLs", len(urls))
-			results, errs := w.crawler.CrawlBatch(ctx, urls)
-			for url, result := range results {
-				crawlResults[url] = result
-			}
-			for url, err := range errs {
-				crawlErrors[url] = err
-			}
-		}()
-	}
-
-	for _, bd := range redditDocs {
-		crawlWg.Add(1)
+	// Phase 2: Resume docs — process from their current step.
+	for _, bd := range resumeDocs {
+		wg.Add(1)
 		go func(bd batchDoc) {
-			defer crawlWg.Done()
-			result, err := w.crawler.Crawl(ctx, bd.doc.URL)
-			if err != nil {
-				crawlErrors[bd.doc.URL] = err
-			} else {
-				crawlResults[bd.doc.URL] = result
-			}
-		}(bd)
-	}
+			defer wg.Done()
+			defer func() {
+				if bd.item.progress != nil {
+					close(bd.item.progress)
+				}
+			}()
 
-	// Individual crawl for prefetch HTML docs.
-	for _, bd := range prefetchDocs {
-		crawlWg.Add(1)
-		go func(bd batchDoc) {
-			defer crawlWg.Done()
-			html, err := w.fs.ReadPrefetchHTML(bd.doc.ID)
-			if err != nil {
-				crawlErrors[bd.doc.URL] = err
-				return
-			}
-			result, err := w.crawler.CrawlWithHTML(ctx, bd.doc.URL, string(html))
-			if err != nil {
-				crawlErrors[bd.doc.URL] = err
-			} else {
-				crawlResults[bd.doc.URL] = result
-				w.fs.DeletePrefetchHTML(bd.doc.ID)
-			}
-		}(bd)
-	}
-
-	crawlWg.Wait()
-
-	// Process crawl results: save + chunk for successes, handleError for failures.
-	var embedDocs []batchDoc
-	for i := range docs {
-		bd := &docs[i]
-		url := bd.doc.URL
-
-		if crawlErr, failed := crawlErrors[url]; failed {
-			w.handleError(ctx, bd.doc.ID, fmt.Errorf("crawl: %w", crawlErr))
-			if bd.item.progress != nil {
-				sendProgress(bd.item.progress, ProgressUpdate{
-					DocumentID: bd.doc.ID, Status: "ERROR", Message: crawlErr.Error(),
-				})
-				close(bd.item.progress)
-			}
-			log.Printf("worker: crawl failed for %s: %v", url, crawlErr)
-			continue
-		}
-
-		result := crawlResults[url]
-		if err := w.saveCrawlResult(ctx, &bd.doc, result, bd.item.progress); err != nil {
-			w.handleError(ctx, bd.doc.ID, err)
-			if bd.item.progress != nil {
-				sendProgress(bd.item.progress, ProgressUpdate{
-					DocumentID: bd.doc.ID, Status: "ERROR", Message: err.Error(),
-				})
-				close(bd.item.progress)
-			}
-			log.Printf("worker: save crawl result failed for %s: %v", url, err)
-			continue
-		}
-
-		if err := w.doChunk(ctx, &bd.doc, bd.item.progress); err != nil {
-			w.handleError(ctx, bd.doc.ID, err)
-			if bd.item.progress != nil {
-				sendProgress(bd.item.progress, ProgressUpdate{
-					DocumentID: bd.doc.ID, Status: "ERROR", Message: err.Error(),
-				})
-				close(bd.item.progress)
-			}
-			log.Printf("worker: chunk failed for %s: %v", url, err)
-			continue
-		}
-
-		embedDocs = append(embedDocs, *bd)
-	}
-
-	// Fan out embed + index into goroutines (rate limited per-doc).
-	var embedWg sync.WaitGroup
-	for _, bd := range embedDocs {
-		embedWg.Add(1)
-		go func(bd batchDoc) {
-			defer embedWg.Done()
-			vectors := make(map[string][]float32)
-
-			var docErr error
-			if err := w.doEmbed(ctx, &bd.doc, bd.item.progress, vectors); err != nil {
-				docErr = err
-			} else if err := w.doIndex(ctx, &bd.doc, bd.item.progress, vectors); err != nil {
-				docErr = err
-			}
-
-			if bd.item.progress != nil {
-				if docErr != nil {
+			if err := w.processDocumentStages(ctx, bd.doc, bd.item.progress); err != nil {
+				if bd.item.progress != nil {
 					sendProgress(bd.item.progress, ProgressUpdate{
-						DocumentID: bd.doc.ID, Status: "ERROR", Message: docErr.Error(),
+						DocumentID: bd.doc.ID, Status: "ERROR", Message: err.Error(),
 					})
 				}
-				close(bd.item.progress)
-			}
-			if docErr != nil {
-				w.handleError(ctx, bd.doc.ID, docErr)
-				log.Printf("worker: embed/index failed for %s: %v", bd.doc.URL, docErr)
+				log.Printf("worker: resume failed for %s: %v", bd.doc.URL, err)
 			}
 		}(bd)
 	}
-	embedWg.Wait()
+
+	// Phase 3: Batch crawl fresh docs.
+	if len(freshDocs) > 0 {
+		// Separate Reddit URLs from regular URLs.
+		var regularDocs []batchDoc
+		var redditDocs []batchDoc
+		for _, bd := range freshDocs {
+			if pipeline.IsRedditURL(bd.doc.URL) {
+				redditDocs = append(redditDocs, bd)
+			} else {
+				regularDocs = append(regularDocs, bd)
+			}
+		}
+
+		// Separate prefetch HTML docs from regular docs.
+		var prefetchDocs []batchDoc
+		var regularDocsFiltered []batchDoc
+		for _, bd := range regularDocs {
+			if w.fs.HasPrefetchHTML(bd.doc.ID) {
+				prefetchDocs = append(prefetchDocs, bd)
+			} else {
+				regularDocsFiltered = append(regularDocsFiltered, bd)
+			}
+		}
+		regularDocs = regularDocsFiltered
+
+		// Crawl all concurrently.
+		crawlResults := make(map[string]pipeline.CrawlResult)
+		crawlErrors := make(map[string]error)
+		var crawlWg sync.WaitGroup
+
+		if len(regularDocs) > 0 {
+			crawlWg.Add(1)
+			go func() {
+				defer crawlWg.Done()
+				urls := make([]string, len(regularDocs))
+				for i, bd := range regularDocs {
+					urls[i] = bd.doc.URL
+				}
+				log.Printf("worker: batch crawling %d URLs", len(urls))
+				results, errs := w.crawler.CrawlBatch(ctx, urls)
+				for url, result := range results {
+					crawlResults[url] = result
+				}
+				for url, err := range errs {
+					crawlErrors[url] = err
+				}
+			}()
+		}
+
+		for _, bd := range redditDocs {
+			crawlWg.Add(1)
+			go func(bd batchDoc) {
+				defer crawlWg.Done()
+				result, err := w.crawler.Crawl(ctx, bd.doc.URL)
+				if err != nil {
+					crawlErrors[bd.doc.URL] = err
+				} else {
+					crawlResults[bd.doc.URL] = result
+				}
+			}(bd)
+		}
+
+		for _, bd := range prefetchDocs {
+			crawlWg.Add(1)
+			go func(bd batchDoc) {
+				defer crawlWg.Done()
+				html, err := w.fs.ReadPrefetchHTML(bd.doc.ID)
+				if err != nil {
+					crawlErrors[bd.doc.URL] = err
+					return
+				}
+				result, err := w.crawler.CrawlWithHTML(ctx, bd.doc.URL, string(html))
+				if err != nil {
+					crawlErrors[bd.doc.URL] = err
+				} else {
+					crawlResults[bd.doc.URL] = result
+					w.fs.DeletePrefetchHTML(bd.doc.ID)
+				}
+			}(bd)
+		}
+
+		crawlWg.Wait()
+
+		// Phase 4: Process crawl results — save, chunk, then fan out embed+index.
+		for i := range freshDocs {
+			bd := &freshDocs[i]
+			url := bd.doc.URL
+
+			if crawlErr, failed := crawlErrors[url]; failed {
+				w.failDocument(ctx, bd.doc.ID, "CRAWLING", fmt.Errorf("crawl: %w", crawlErr))
+				if bd.item.progress != nil {
+					sendProgress(bd.item.progress, ProgressUpdate{
+						DocumentID: bd.doc.ID, Status: "ERROR", Message: crawlErr.Error(),
+					})
+					close(bd.item.progress)
+				}
+				log.Printf("worker: crawl failed for %s: %v", url, crawlErr)
+				continue
+			}
+
+			result := crawlResults[url]
+			if err := w.saveCrawlResult(ctx, &bd.doc, result, bd.item.progress); err != nil {
+				w.failDocument(ctx, bd.doc.ID, "CRAWLING", err)
+				if bd.item.progress != nil {
+					sendProgress(bd.item.progress, ProgressUpdate{
+						DocumentID: bd.doc.ID, Status: "ERROR", Message: err.Error(),
+					})
+					close(bd.item.progress)
+				}
+				log.Printf("worker: save crawl result failed for %s: %v", url, err)
+				continue
+			}
+
+			if err := w.pg.AdvanceStep(ctx, bd.doc.ID, "CHUNKING"); err != nil {
+				log.Printf("worker: advance to CHUNKING failed for %s: %v", bd.doc.ID, err)
+				if bd.item.progress != nil {
+					close(bd.item.progress)
+				}
+				continue
+			}
+
+			if err := w.doChunk(ctx, &bd.doc, bd.item.progress); err != nil {
+				w.failDocument(ctx, bd.doc.ID, "CHUNKING", err)
+				if bd.item.progress != nil {
+					sendProgress(bd.item.progress, ProgressUpdate{
+						DocumentID: bd.doc.ID, Status: "ERROR", Message: err.Error(),
+					})
+					close(bd.item.progress)
+				}
+				log.Printf("worker: chunk failed for %s: %v", url, err)
+				continue
+			}
+
+			if err := w.pg.AdvanceStep(ctx, bd.doc.ID, "EMBEDDING"); err != nil {
+				log.Printf("worker: advance to EMBEDDING failed for %s: %v", bd.doc.ID, err)
+				if bd.item.progress != nil {
+					close(bd.item.progress)
+				}
+				continue
+			}
+			bd.doc.Step = "EMBEDDING"
+
+			// Fan out embed + index.
+			wg.Add(1)
+			go func(bd batchDoc) {
+				defer wg.Done()
+				defer func() {
+					if bd.item.progress != nil {
+						close(bd.item.progress)
+					}
+				}()
+
+				if err := w.processDocumentStages(ctx, bd.doc, bd.item.progress); err != nil {
+					if bd.item.progress != nil {
+						sendProgress(bd.item.progress, ProgressUpdate{
+							DocumentID: bd.doc.ID, Status: "ERROR", Message: err.Error(),
+						})
+					}
+					log.Printf("worker: embed/index failed for %s: %v", bd.doc.URL, err)
+				}
+			}(*bd)
+		}
+	}
+
+	wg.Wait()
 }
 
 // sendProgress sends an update on the channel if it is non-nil.
