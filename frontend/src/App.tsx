@@ -8,7 +8,7 @@ export function App() {
   return (
     <BrowserRouter>
       <Nav />
-      <main className="container" style={{ paddingLeft: 'calc(var(--pico-spacing) / 2)', paddingRight: 'calc(var(--pico-spacing) / 2)' }}>
+      <main className="container" style={{ maxWidth: '1400px' }}>
         <Routes>
           <Route path="/" element={<StatusPage />} />
           <Route path="/ingest" element={<IngestPage />} />
