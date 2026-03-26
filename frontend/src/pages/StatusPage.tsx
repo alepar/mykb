@@ -76,7 +76,7 @@ export function StatusPage() {
             <tr key={doc.id}>
               <td className="py-1.5 pr-3" title={doc.title || undefined}>
                 <a href={doc.url} target="_blank" rel="noopener">
-                  {doc.title ? truncate(doc.title, 50) : '—'}
+                  {doc.title ? truncate(doc.title, 80) : '—'}
                 </a>
               </td>
               <td className="py-1.5 pr-3">{doc.step}</td>
