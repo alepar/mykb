@@ -18,15 +18,49 @@ var migrationFS embed.FS
 type Document struct {
 	ID          string
 	URL         string
-	Status      string
+	Step        string     // Pipeline stage: CRAWLING, CHUNKING, EMBEDDING, INDEXING, DONE
+	State       string     // Lifecycle: QUEUED, PROCESSING, COMPLETED, FAILED, ABANDONED
+	FailedStep  *string    // Which step caused the error
+	IsRetriable bool       // Whether the error is worth retrying
 	Error       *string
 	Title       *string
 	ChunkCount  *int
 	RetryCount  int
 	NextRetryAt *time.Time
+	LockedAt    *time.Time // When a worker claimed this document
+	LockedBy    *string    // Worker identifier (hostname-PID)
 	CrawledAt   *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+const documentColumns = `id, url, step, state, failed_step, is_retriable,
+	error, title, chunk_count, retry_count, next_retry_at,
+	locked_at, locked_by, crawled_at, created_at, updated_at`
+
+func scanDocument(row pgx.Row) (Document, error) {
+	var d Document
+	err := row.Scan(&d.ID, &d.URL, &d.Step, &d.State, &d.FailedStep,
+		&d.IsRetriable, &d.Error, &d.Title, &d.ChunkCount,
+		&d.RetryCount, &d.NextRetryAt, &d.LockedAt, &d.LockedBy,
+		&d.CrawledAt, &d.CreatedAt, &d.UpdatedAt)
+	return d, err
+}
+
+func (d Document) DisplayStatus() string {
+	switch d.State {
+	case "QUEUED":
+		return "PENDING"
+	case "COMPLETED":
+		return "DONE"
+	case "FAILED":
+		if !d.IsRetriable {
+			return "ERROR"
+		}
+		return d.Step
+	default: // PROCESSING, ABANDONED
+		return d.Step
+	}
 }
 
 // Chunk represents a row in the chunks table.
@@ -145,65 +179,12 @@ func (s *PostgresStore) Close() {
 
 // InsertDocument inserts a new document with the given URL and returns it.
 func (s *PostgresStore) InsertDocument(ctx context.Context, url string) (Document, error) {
-	var d Document
-	err := s.pool.QueryRow(ctx,
-		`INSERT INTO documents (url) VALUES ($1)
-		 RETURNING id, url, status, error, title, chunk_count, retry_count,
-		           next_retry_at, crawled_at, created_at, updated_at`,
-		url,
-	).Scan(&d.ID, &d.URL, &d.Status, &d.Error, &d.Title, &d.ChunkCount,
-		&d.RetryCount, &d.NextRetryAt, &d.CrawledAt, &d.CreatedAt, &d.UpdatedAt)
+	d, err := scanDocument(s.pool.QueryRow(ctx,
+		`INSERT INTO documents (url) VALUES ($1) RETURNING `+documentColumns, url))
 	if err != nil {
 		return Document{}, fmt.Errorf("insert document: %w", err)
 	}
 	return d, nil
-}
-
-// UpdateDocumentStatus sets the status and updated_at for a document.
-func (s *PostgresStore) UpdateDocumentStatus(ctx context.Context, id, status string) error {
-	ct, err := s.pool.Exec(ctx,
-		`UPDATE documents SET status = $2, updated_at = now() WHERE id = $1`, id, status)
-	if err != nil {
-		return fmt.Errorf("update document status: %w", err)
-	}
-	if ct.RowsAffected() == 0 {
-		return fmt.Errorf("document %s not found", id)
-	}
-	return nil
-}
-
-// SetDocumentError sets the error message, increments retry_count, and
-// computes next_retry_at using exponential backoff (2^retry_count * 30s).
-// When retry_count reaches maxRetries, status is set to ERROR.
-func (s *PostgresStore) SetDocumentError(ctx context.Context, id, errMsg string, maxRetries int) error {
-	ct, err := s.pool.Exec(ctx,
-		`UPDATE documents
-		 SET error = $2,
-		     retry_count = retry_count + 1,
-		     next_retry_at = now() + make_interval(secs => power(2, retry_count) * 30),
-		     status = CASE WHEN retry_count + 1 >= $3 THEN 'ERROR' ELSE status END,
-		     updated_at = now()
-		 WHERE id = $1`, id, errMsg, maxRetries)
-	if err != nil {
-		return fmt.Errorf("set document error: %w", err)
-	}
-	if ct.RowsAffected() == 0 {
-		return fmt.Errorf("document %s not found", id)
-	}
-	return nil
-}
-
-// ClearDocumentError sets the error field to NULL.
-func (s *PostgresStore) ClearDocumentError(ctx context.Context, id string) error {
-	ct, err := s.pool.Exec(ctx,
-		`UPDATE documents SET error = NULL, updated_at = now() WHERE id = $1`, id)
-	if err != nil {
-		return fmt.Errorf("clear document error: %w", err)
-	}
-	if ct.RowsAffected() == 0 {
-		return fmt.Errorf("document %s not found", id)
-	}
-	return nil
 }
 
 // SetDocumentTitle sets the title for a document.
@@ -247,13 +228,8 @@ func (s *PostgresStore) SetDocumentCrawledAt(ctx context.Context, id string) err
 
 // GetDocument retrieves a single document by ID.
 func (s *PostgresStore) GetDocument(ctx context.Context, id string) (Document, error) {
-	var d Document
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, url, status, error, title, chunk_count, retry_count,
-		        next_retry_at, crawled_at, created_at, updated_at
-		 FROM documents WHERE id = $1`, id,
-	).Scan(&d.ID, &d.URL, &d.Status, &d.Error, &d.Title, &d.ChunkCount,
-		&d.RetryCount, &d.NextRetryAt, &d.CrawledAt, &d.CreatedAt, &d.UpdatedAt)
+	d, err := scanDocument(s.pool.QueryRow(ctx,
+		`SELECT `+documentColumns+` FROM documents WHERE id = $1`, id))
 	if err != nil {
 		return Document{}, fmt.Errorf("get document: %w", err)
 	}
@@ -262,13 +238,8 @@ func (s *PostgresStore) GetDocument(ctx context.Context, id string) (Document, e
 
 // GetDocumentByURL retrieves a document by its URL.
 func (s *PostgresStore) GetDocumentByURL(ctx context.Context, url string) (Document, error) {
-	var d Document
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, url, status, error, title, chunk_count, retry_count,
-		        next_retry_at, crawled_at, created_at, updated_at
-		 FROM documents WHERE url = $1`, url,
-	).Scan(&d.ID, &d.URL, &d.Status, &d.Error, &d.Title, &d.ChunkCount,
-		&d.RetryCount, &d.NextRetryAt, &d.CrawledAt, &d.CreatedAt, &d.UpdatedAt)
+	d, err := scanDocument(s.pool.QueryRow(ctx,
+		`SELECT `+documentColumns+` FROM documents WHERE url = $1`, url))
 	if err != nil {
 		return Document{}, fmt.Errorf("get document by url: %w", err)
 	}
@@ -278,9 +249,7 @@ func (s *PostgresStore) GetDocumentByURL(ctx context.Context, url string) (Docum
 // GetDocumentsByIDs retrieves multiple documents by their IDs.
 func (s *PostgresStore) GetDocumentsByIDs(ctx context.Context, ids []string) ([]Document, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, url, status, error, title, chunk_count, retry_count,
-		        next_retry_at, crawled_at, created_at, updated_at
-		 FROM documents WHERE id = ANY($1)`, ids)
+		`SELECT `+documentColumns+` FROM documents WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("get documents by ids: %w", err)
 	}
@@ -295,16 +264,13 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, limit, offset int) ([
 	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM documents`).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count documents: %w", err)
 	}
-
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, url, status, error, title, chunk_count, retry_count,
-		        next_retry_at, crawled_at, created_at, updated_at
+		`SELECT `+documentColumns+`
 		 FROM documents ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list documents: %w", err)
 	}
 	defer rows.Close()
-
 	docs, err := scanDocuments(rows)
 	if err != nil {
 		return nil, 0, err
@@ -315,7 +281,18 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, limit, offset int) ([
 // StatusCounts returns the number of documents in each status and the total chunk count.
 func (s *PostgresStore) StatusCounts(ctx context.Context) (map[string]int, int, error) {
 	counts := make(map[string]int)
-	rows, err := s.pool.Query(ctx, `SELECT status, COUNT(*) FROM documents GROUP BY status`)
+	rows, err := s.pool.Query(ctx,
+		`SELECT
+		   CASE
+		     WHEN state = 'QUEUED' THEN 'PENDING'
+		     WHEN state = 'COMPLETED' THEN 'DONE'
+		     WHEN state = 'FAILED' AND is_retriable = false THEN 'ERROR'
+		     WHEN state = 'FAILED' THEN step
+		     WHEN state = 'ABANDONED' THEN step
+		     ELSE step
+		   END AS display_status,
+		   COUNT(*)
+		 FROM documents GROUP BY display_status`)
 	if err != nil {
 		return nil, 0, fmt.Errorf("status counts: %w", err)
 	}
@@ -328,13 +305,98 @@ func (s *PostgresStore) StatusCounts(ctx context.Context) (map[string]int, int, 
 		}
 		counts[status] = count
 	}
-
 	var chunkCount int
 	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM chunks`).Scan(&chunkCount); err != nil {
 		return nil, 0, fmt.Errorf("count chunks: %w", err)
 	}
-
 	return counts, chunkCount, nil
+}
+
+// ClaimDocument atomically transitions a document from QUEUED/FAILED/ABANDONED
+// to PROCESSING and assigns a worker lock. Returns (false, zero, nil) if the
+// document is not in a claimable state.
+func (s *PostgresStore) ClaimDocument(ctx context.Context, id, workerID string) (bool, Document, error) {
+	d, err := scanDocument(s.pool.QueryRow(ctx,
+		`UPDATE documents
+		 SET state = 'PROCESSING', locked_at = now(), locked_by = $2,
+		     error = NULL, failed_step = NULL, updated_at = now()
+		 WHERE id = $1 AND state IN ('QUEUED', 'FAILED', 'ABANDONED')
+		 RETURNING `+documentColumns,
+		id, workerID))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return false, Document{}, nil
+		}
+		return false, Document{}, fmt.Errorf("claim document: %w", err)
+	}
+	return true, d, nil
+}
+
+// AdvanceStep moves a document to the next pipeline step without changing state.
+func (s *PostgresStore) AdvanceStep(ctx context.Context, id, newStep string) error {
+	ct, err := s.pool.Exec(ctx,
+		`UPDATE documents SET step = $2, updated_at = now() WHERE id = $1`,
+		id, newStep)
+	if err != nil {
+		return fmt.Errorf("advance step: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("document %s not found", id)
+	}
+	return nil
+}
+
+// CompleteDocument marks a document as successfully processed.
+func (s *PostgresStore) CompleteDocument(ctx context.Context, id string) error {
+	ct, err := s.pool.Exec(ctx,
+		`UPDATE documents
+		 SET step = 'DONE', state = 'COMPLETED',
+		     locked_at = NULL, locked_by = NULL,
+		     error = NULL, failed_step = NULL, updated_at = now()
+		 WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("complete document: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("document %s not found", id)
+	}
+	return nil
+}
+
+// FailDocument records a failure, increments retry_count, and computes
+// next_retry_at using exponential backoff. Marks as non-retriable if the
+// error is permanent or max retries are exhausted.
+func (s *PostgresStore) FailDocument(ctx context.Context, id, failedStep, errMsg string, retriable bool, maxRetries int) error {
+	ct, err := s.pool.Exec(ctx,
+		`UPDATE documents
+		 SET state = 'FAILED', failed_step = $2, error = $3,
+		     retry_count = retry_count + 1,
+		     next_retry_at = now() + make_interval(secs => power(2, retry_count) * 30),
+		     is_retriable = CASE WHEN NOT $4 THEN false WHEN retry_count + 1 >= $5 THEN false ELSE true END,
+		     locked_at = NULL, locked_by = NULL, updated_at = now()
+		 WHERE id = $1`,
+		id, failedStep, errMsg, retriable, maxRetries)
+	if err != nil {
+		return fmt.Errorf("fail document: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("document %s not found", id)
+	}
+	return nil
+}
+
+// AbandonStaleDocuments marks PROCESSING documents as ABANDONED if they have
+// been locked longer than the given timeout.
+func (s *PostgresStore) AbandonStaleDocuments(ctx context.Context, timeout time.Duration) (int, error) {
+	ct, err := s.pool.Exec(ctx,
+		`UPDATE documents
+		 SET state = 'ABANDONED', locked_at = NULL, locked_by = NULL, updated_at = now()
+		 WHERE state = 'PROCESSING' AND locked_at < $1`,
+		time.Now().Add(-timeout))
+	if err != nil {
+		return 0, fmt.Errorf("abandon stale documents: %w", err)
+	}
+	return int(ct.RowsAffected()), nil
 }
 
 // DeleteDocument deletes a document by ID. Chunks are cascade-deleted via FK.
@@ -350,14 +412,14 @@ func (s *PostgresStore) DeleteDocument(ctx context.Context, id string) error {
 }
 
 // GetPendingDocuments returns documents that are eligible for processing:
-// not DONE and either no error or retry-eligible.
+// QUEUED, ABANDONED, or retriable FAILED with elapsed backoff.
 func (s *PostgresStore) GetPendingDocuments(ctx context.Context, maxRetries int) ([]Document, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, url, status, error, title, chunk_count, retry_count,
-		        next_retry_at, crawled_at, created_at, updated_at
+		`SELECT `+documentColumns+`
 		 FROM documents
-		 WHERE status != 'DONE'
-		   AND (error IS NULL OR (retry_count < $1 AND next_retry_at <= now()))
+		 WHERE state IN ('QUEUED', 'ABANDONED')
+		    OR (state = 'FAILED' AND is_retriable = true
+		        AND retry_count < $1 AND next_retry_at <= now())
 		 ORDER BY created_at`, maxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("get pending documents: %w", err)
@@ -458,8 +520,10 @@ func scanDocuments(rows pgx.Rows) ([]Document, error) {
 	var docs []Document
 	for rows.Next() {
 		var d Document
-		if err := rows.Scan(&d.ID, &d.URL, &d.Status, &d.Error, &d.Title, &d.ChunkCount,
-			&d.RetryCount, &d.NextRetryAt, &d.CrawledAt, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.URL, &d.Step, &d.State, &d.FailedStep,
+			&d.IsRetriable, &d.Error, &d.Title, &d.ChunkCount,
+			&d.RetryCount, &d.NextRetryAt, &d.LockedAt, &d.LockedBy,
+			&d.CrawledAt, &d.CreatedAt, &d.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan document: %w", err)
 		}
 		docs = append(docs, d)

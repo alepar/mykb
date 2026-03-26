@@ -62,6 +62,30 @@ func newTestStore(t *testing.T) *PostgresStore {
 	return store
 }
 
+func TestDisplayStatus(t *testing.T) {
+	tests := []struct {
+		step, state string
+		retriable   bool
+		want        string
+	}{
+		{"CRAWLING", "QUEUED", true, "PENDING"},
+		{"CRAWLING", "PROCESSING", true, "CRAWLING"},
+		{"EMBEDDING", "PROCESSING", true, "EMBEDDING"},
+		{"DONE", "COMPLETED", true, "DONE"},
+		{"CRAWLING", "FAILED", true, "CRAWLING"},
+		{"CRAWLING", "FAILED", false, "ERROR"},
+		{"EMBEDDING", "FAILED", false, "ERROR"},
+		{"CRAWLING", "ABANDONED", true, "CRAWLING"},
+	}
+	for _, tt := range tests {
+		d := Document{Step: tt.step, State: tt.state, IsRetriable: tt.retriable}
+		if got := d.DisplayStatus(); got != tt.want {
+			t.Errorf("DisplayStatus(%q, %q, retriable=%v) = %q, want %q",
+				tt.step, tt.state, tt.retriable, got, tt.want)
+		}
+	}
+}
+
 func TestInsertAndGetDocument(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -76,8 +100,14 @@ func TestInsertAndGetDocument(t *testing.T) {
 	if doc.URL != "https://example.com/page1" {
 		t.Fatalf("URL = %q, want %q", doc.URL, "https://example.com/page1")
 	}
-	if doc.Status != "PENDING" {
-		t.Fatalf("Status = %q, want PENDING", doc.Status)
+	if doc.Step != "CRAWLING" {
+		t.Fatalf("Step = %q, want CRAWLING", doc.Step)
+	}
+	if doc.State != "QUEUED" {
+		t.Fatalf("State = %q, want QUEUED", doc.State)
+	}
+	if !doc.IsRetriable {
+		t.Fatal("expected IsRetriable = true")
 	}
 
 	got, err := store.GetDocument(ctx, doc.ID)
@@ -103,32 +133,118 @@ func TestDuplicateURL(t *testing.T) {
 	}
 }
 
-func TestUpdateDocumentStatus(t *testing.T) {
+func TestClaimDocument(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	doc, _ := store.InsertDocument(ctx, "https://example.com/status")
-	if err := store.UpdateDocumentStatus(ctx, doc.ID, "CRAWLING"); err != nil {
-		t.Fatalf("UpdateDocumentStatus: %v", err)
+	doc, _ := store.InsertDocument(ctx, "https://example.com/claim")
+
+	claimed, got, err := store.ClaimDocument(ctx, doc.ID, "worker-1")
+	if err != nil {
+		t.Fatalf("ClaimDocument: %v", err)
 	}
-	got, _ := store.GetDocument(ctx, doc.ID)
-	if got.Status != "CRAWLING" {
-		t.Fatalf("Status = %q, want CRAWLING", got.Status)
+	if !claimed {
+		t.Fatal("expected claim to succeed")
+	}
+	if got.State != "PROCESSING" {
+		t.Fatalf("State = %q, want PROCESSING", got.State)
+	}
+	if got.LockedBy == nil || *got.LockedBy != "worker-1" {
+		t.Fatalf("LockedBy = %v, want worker-1", got.LockedBy)
+	}
+	if got.LockedAt == nil {
+		t.Fatal("LockedAt should be set")
+	}
+
+	claimed2, _, err := store.ClaimDocument(ctx, doc.ID, "worker-2")
+	if err != nil {
+		t.Fatalf("second ClaimDocument: %v", err)
+	}
+	if claimed2 {
+		t.Fatal("expected second claim to fail")
 	}
 }
 
-func TestSetDocumentError(t *testing.T) {
+func TestClaimDocument_ClearsError(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	doc, _ := store.InsertDocument(ctx, "https://example.com/err")
-	if err := store.SetDocumentError(ctx, doc.ID, "boom", 3); err != nil {
-		t.Fatalf("SetDocumentError: %v", err)
-	}
+	doc, _ := store.InsertDocument(ctx, "https://example.com/claimerr")
+	store.ClaimDocument(ctx, doc.ID, "w1")
+	store.FailDocument(ctx, doc.ID, "CRAWLING", "boom", true, 3)
 
+	claimed, got, _ := store.ClaimDocument(ctx, doc.ID, "w2")
+	if !claimed {
+		t.Fatal("expected re-claim to succeed for FAILED doc")
+	}
+	if got.Error != nil {
+		t.Fatalf("Error should be nil after re-claim, got %v", got.Error)
+	}
+	if got.FailedStep != nil {
+		t.Fatalf("FailedStep should be nil after re-claim, got %v", got.FailedStep)
+	}
+}
+
+func TestAdvanceStep(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	doc, _ := store.InsertDocument(ctx, "https://example.com/advance")
+	store.ClaimDocument(ctx, doc.ID, "w1")
+
+	if err := store.AdvanceStep(ctx, doc.ID, "CHUNKING"); err != nil {
+		t.Fatalf("AdvanceStep: %v", err)
+	}
 	got, _ := store.GetDocument(ctx, doc.ID)
-	if got.Error == nil || *got.Error != "boom" {
-		t.Fatalf("Error = %v, want 'boom'", got.Error)
+	if got.Step != "CHUNKING" {
+		t.Fatalf("Step = %q, want CHUNKING", got.Step)
+	}
+	if got.State != "PROCESSING" {
+		t.Fatalf("State = %q, want PROCESSING (unchanged)", got.State)
+	}
+}
+
+func TestCompleteDocument(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	doc, _ := store.InsertDocument(ctx, "https://example.com/complete")
+	store.ClaimDocument(ctx, doc.ID, "w1")
+
+	if err := store.CompleteDocument(ctx, doc.ID); err != nil {
+		t.Fatalf("CompleteDocument: %v", err)
+	}
+	got, _ := store.GetDocument(ctx, doc.ID)
+	if got.Step != "DONE" {
+		t.Fatalf("Step = %q, want DONE", got.Step)
+	}
+	if got.State != "COMPLETED" {
+		t.Fatalf("State = %q, want COMPLETED", got.State)
+	}
+	if got.LockedAt != nil || got.LockedBy != nil {
+		t.Fatal("lock should be released")
+	}
+}
+
+func TestFailDocument_Retriable(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	doc, _ := store.InsertDocument(ctx, "https://example.com/failretry")
+	store.ClaimDocument(ctx, doc.ID, "w1")
+
+	if err := store.FailDocument(ctx, doc.ID, "CRAWLING", "timeout", true, 3); err != nil {
+		t.Fatalf("FailDocument: %v", err)
+	}
+	got, _ := store.GetDocument(ctx, doc.ID)
+	if got.State != "FAILED" {
+		t.Fatalf("State = %q, want FAILED", got.State)
+	}
+	if got.FailedStep == nil || *got.FailedStep != "CRAWLING" {
+		t.Fatalf("FailedStep = %v, want CRAWLING", got.FailedStep)
+	}
+	if !got.IsRetriable {
+		t.Fatal("expected IsRetriable = true")
 	}
 	if got.RetryCount != 1 {
 		t.Fatalf("RetryCount = %d, want 1", got.RetryCount)
@@ -136,23 +252,70 @@ func TestSetDocumentError(t *testing.T) {
 	if got.NextRetryAt == nil {
 		t.Fatal("NextRetryAt should be set")
 	}
-	if !got.NextRetryAt.After(time.Now().Add(-time.Second)) {
-		t.Fatal("NextRetryAt should be in the future (or very recent)")
+	if got.LockedBy != nil || got.LockedAt != nil {
+		t.Fatal("lock should be released on failure")
 	}
 }
 
-func TestClearDocumentError(t *testing.T) {
+func TestFailDocument_Permanent(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	doc, _ := store.InsertDocument(ctx, "https://example.com/clr")
-	_ = store.SetDocumentError(ctx, doc.ID, "fail", 3)
-	if err := store.ClearDocumentError(ctx, doc.ID); err != nil {
-		t.Fatalf("ClearDocumentError: %v", err)
+	doc, _ := store.InsertDocument(ctx, "https://example.com/failperm")
+	store.ClaimDocument(ctx, doc.ID, "w1")
+
+	if err := store.FailDocument(ctx, doc.ID, "CRAWLING", "invalid URL", false, 3); err != nil {
+		t.Fatalf("FailDocument: %v", err)
 	}
 	got, _ := store.GetDocument(ctx, doc.ID)
-	if got.Error != nil {
-		t.Fatalf("Error = %v, want nil", got.Error)
+	if got.IsRetriable {
+		t.Fatal("expected IsRetriable = false for permanent error")
+	}
+}
+
+func TestFailDocument_MaxRetries(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	doc, _ := store.InsertDocument(ctx, "https://example.com/failmax")
+	for i := 0; i < 3; i++ {
+		store.ClaimDocument(ctx, doc.ID, "w1")
+		store.FailDocument(ctx, doc.ID, "CRAWLING", "error", true, 3)
+	}
+
+	got, _ := store.GetDocument(ctx, doc.ID)
+	if got.IsRetriable {
+		t.Fatal("expected IsRetriable = false after max retries exhausted")
+	}
+	if got.RetryCount != 3 {
+		t.Fatalf("RetryCount = %d, want 3", got.RetryCount)
+	}
+}
+
+func TestAbandonStaleDocuments(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	doc, _ := store.InsertDocument(ctx, "https://example.com/abandon")
+	store.ClaimDocument(ctx, doc.ID, "w1")
+
+	_, _ = store.pool.Exec(ctx,
+		`UPDATE documents SET locked_at = now() - interval '10 minutes' WHERE id = $1`, doc.ID)
+
+	count, err := store.AbandonStaleDocuments(ctx, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("AbandonStaleDocuments: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+
+	got, _ := store.GetDocument(ctx, doc.ID)
+	if got.State != "ABANDONED" {
+		t.Fatalf("State = %q, want ABANDONED", got.State)
+	}
+	if got.LockedAt != nil || got.LockedBy != nil {
+		t.Fatal("lock should be cleared on abandon")
 	}
 }
 
@@ -160,31 +323,29 @@ func TestGetPendingDocuments(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	// Pending doc (no error).
-	pending, _ := store.InsertDocument(ctx, "https://example.com/pending")
-	_ = pending // used by assertion below
+	queued, _ := store.InsertDocument(ctx, "https://example.com/queued")
 
-	// Done doc should be excluded.
 	done, _ := store.InsertDocument(ctx, "https://example.com/done")
-	_ = store.UpdateDocumentStatus(ctx, done.ID, "DONE")
+	store.ClaimDocument(ctx, done.ID, "w1")
+	store.CompleteDocument(ctx, done.ID)
 
-	// Doc with error but retry eligible (next_retry_at in past).
-	retryable, _ := store.InsertDocument(ctx, "https://example.com/retryable")
-	_ = store.SetDocumentError(ctx, retryable.ID, "transient", 3)
-	// Force next_retry_at to past so it's eligible.
+	abandoned, _ := store.InsertDocument(ctx, "https://example.com/abandoned")
+	store.ClaimDocument(ctx, abandoned.ID, "w1")
 	_, _ = store.pool.Exec(ctx,
-		`UPDATE documents SET next_retry_at = now() - interval '1 hour' WHERE id = $1`,
-		retryable.ID)
+		`UPDATE documents SET state = 'ABANDONED', locked_at = NULL, locked_by = NULL WHERE id = $1`,
+		abandoned.ID)
 
-	// Doc with error over max retries.
-	overMax, _ := store.InsertDocument(ctx, "https://example.com/overmax")
-	for i := 0; i < 5; i++ {
-		_ = store.SetDocumentError(ctx, overMax.ID, "fail", 3)
-	}
-	// Force next_retry_at to past.
+	retriable, _ := store.InsertDocument(ctx, "https://example.com/retriable")
+	store.ClaimDocument(ctx, retriable.ID, "w1")
+	store.FailDocument(ctx, retriable.ID, "CRAWLING", "error", true, 3)
 	_, _ = store.pool.Exec(ctx,
-		`UPDATE documents SET next_retry_at = now() - interval '1 hour' WHERE id = $1`,
-		overMax.ID)
+		`UPDATE documents SET next_retry_at = now() - interval '1 hour' WHERE id = $1`, retriable.ID)
+
+	perm, _ := store.InsertDocument(ctx, "https://example.com/perm")
+	store.ClaimDocument(ctx, perm.ID, "w1")
+	store.FailDocument(ctx, perm.ID, "CRAWLING", "invalid", false, 3)
+	_, _ = store.pool.Exec(ctx,
+		`UPDATE documents SET next_retry_at = now() - interval '1 hour' WHERE id = $1`, perm.ID)
 
 	docs, err := store.GetPendingDocuments(ctx, 3)
 	if err != nil {
@@ -196,17 +357,20 @@ func TestGetPendingDocuments(t *testing.T) {
 		ids[d.ID] = true
 	}
 
-	if !ids[pending.ID] {
-		t.Error("expected pending doc in results")
+	if !ids[queued.ID] {
+		t.Error("QUEUED doc should be included")
 	}
 	if ids[done.ID] {
-		t.Error("DONE doc should be excluded")
+		t.Error("COMPLETED doc should be excluded")
 	}
-	if !ids[retryable.ID] {
-		t.Error("retryable doc should be included")
+	if !ids[abandoned.ID] {
+		t.Error("ABANDONED doc should be included")
 	}
-	if ids[overMax.ID] {
-		t.Error("over-max-retries doc should be excluded")
+	if !ids[retriable.ID] {
+		t.Error("retriable FAILED doc should be included")
+	}
+	if ids[perm.ID] {
+		t.Error("non-retriable FAILED doc should be excluded")
 	}
 }
 
@@ -334,6 +498,62 @@ func TestRunMigrations_Idempotent(t *testing.T) {
 	// Running again should be idempotent.
 	if err := store.RunMigrations(ctx); err != nil {
 		t.Fatalf("RunMigrations (idempotent): %v", err)
+	}
+}
+
+func TestStatusCounts(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// 1. QUEUED doc → should display as "PENDING"
+	_, _ = store.InsertDocument(ctx, "https://example.com/sc-queued")
+
+	// 2. PROCESSING doc at CRAWLING → should display as "CRAWLING"
+	processing, _ := store.InsertDocument(ctx, "https://example.com/sc-processing")
+	store.ClaimDocument(ctx, processing.ID, "w1")
+	// ClaimDocument sets state=PROCESSING, step stays CRAWLING
+
+	// 3. COMPLETED doc → should display as "DONE"
+	completed, _ := store.InsertDocument(ctx, "https://example.com/sc-completed")
+	store.ClaimDocument(ctx, completed.ID, "w1")
+	store.CompleteDocument(ctx, completed.ID)
+
+	// 4. Retriable FAILED doc at CRAWLING → should display as "CRAWLING"
+	retriable, _ := store.InsertDocument(ctx, "https://example.com/sc-retriable")
+	store.ClaimDocument(ctx, retriable.ID, "w1")
+	store.FailDocument(ctx, retriable.ID, "CRAWLING", "timeout", true, 3)
+
+	// 5. Non-retriable FAILED doc → should display as "ERROR"
+	permanent, _ := store.InsertDocument(ctx, "https://example.com/sc-permanent")
+	store.ClaimDocument(ctx, permanent.ID, "w1")
+	store.FailDocument(ctx, permanent.ID, "CRAWLING", "bad url", false, 3)
+
+	counts, _, err := store.StatusCounts(ctx)
+	if err != nil {
+		t.Fatalf("StatusCounts: %v", err)
+	}
+
+	// Expected:
+	//   "PENDING"  = 1 (QUEUED doc)
+	//   "CRAWLING" = 2 (PROCESSING doc + retriable FAILED doc)
+	//   "DONE"     = 1 (COMPLETED doc)
+	//   "ERROR"    = 1 (non-retriable FAILED doc)
+	want := map[string]int{
+		"PENDING":  1,
+		"CRAWLING": 2,
+		"DONE":     1,
+		"ERROR":    1,
+	}
+	for status, wantCount := range want {
+		if counts[status] != wantCount {
+			t.Errorf("counts[%q] = %d, want %d", status, counts[status], wantCount)
+		}
+	}
+	// Ensure no unexpected statuses.
+	for status, count := range counts {
+		if _, ok := want[status]; !ok {
+			t.Errorf("unexpected status %q with count %d", status, count)
+		}
 	}
 }
 
