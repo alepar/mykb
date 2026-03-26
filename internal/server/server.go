@@ -303,6 +303,8 @@ func documentToProto(doc storage.Document) *mykbv1.Document {
 		Id:        doc.ID,
 		Url:       doc.URL,
 		Status:    doc.DisplayStatus(),
+		Step:      doc.Step,
+		State:     doc.State,
 		CreatedAt: doc.CreatedAt.Unix(),
 		UpdatedAt: doc.UpdatedAt.Unix(),
 	}

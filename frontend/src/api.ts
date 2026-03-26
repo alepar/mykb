@@ -18,6 +18,8 @@ export interface Document {
   url: string;
   title: string;
   status: string;
+  step: string;
+  state: string;
   error: string;
   chunkCount: number;
   createdAt: string; // unix timestamp as string

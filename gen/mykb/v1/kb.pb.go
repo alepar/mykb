@@ -501,6 +501,8 @@ type Document struct {
 	CrawledAt     int64                  `protobuf:"varint,8,opt,name=crawled_at,json=crawledAt,proto3" json:"crawled_at,omitempty"`
 	Content       string                 `protobuf:"bytes,9,opt,name=content,proto3" json:"content,omitempty"`
 	UpdatedAt     int64                  `protobuf:"varint,10,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	Step          string                 `protobuf:"bytes,11,opt,name=step,proto3" json:"step,omitempty"`
+	State         string                 `protobuf:"bytes,12,opt,name=state,proto3" json:"state,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -603,6 +605,20 @@ func (x *Document) GetUpdatedAt() int64 {
 		return x.UpdatedAt
 	}
 	return 0
+}
+
+func (x *Document) GetStep() string {
+	if x != nil {
+		return x.Step
+	}
+	return ""
+}
+
+func (x *Document) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
 }
 
 type ListDocumentsRequest struct {
@@ -926,7 +942,7 @@ const file_mykb_v1_kb_proto_rawDesc = "" +
 	"chunkIndex\x12\x14\n" +
 	"\x05score\x18\x04 \x01(\x02R\x05score\x12\x12\n" +
 	"\x04text\x18\x05 \x01(\tR\x04text\x12&\n" +
-	"\x0fchunk_index_end\x18\x06 \x01(\x05R\rchunkIndexEnd\"\x88\x02\n" +
+	"\x0fchunk_index_end\x18\x06 \x01(\x05R\rchunkIndexEnd\"\xb2\x02\n" +
 	"\bDocument\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12\x14\n" +
@@ -942,7 +958,9 @@ const file_mykb_v1_kb_proto_rawDesc = "" +
 	"\acontent\x18\t \x01(\tR\acontent\x12\x1d\n" +
 	"\n" +
 	"updated_at\x18\n" +
-	" \x01(\x03R\tupdatedAt\"D\n" +
+	" \x01(\x03R\tupdatedAt\x12\x12\n" +
+	"\x04step\x18\v \x01(\tR\x04step\x12\x14\n" +
+	"\x05state\x18\f \x01(\tR\x05state\"D\n" +
 	"\x14ListDocumentsRequest\x12\x14\n" +
 	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12\x16\n" +
 	"\x06offset\x18\x02 \x01(\x05R\x06offset\"^\n" +
