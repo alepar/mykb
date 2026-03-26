@@ -63,6 +63,28 @@ func NewWorker(
 	}
 }
 
+// startHeartbeat spawns a goroutine that periodically refreshes locked_at
+// for the given document, preventing AbandonStaleDocuments from reclaiming
+// it during long-running operations. Returns a cancel function.
+func (w *Worker) startHeartbeat(ctx context.Context, docID string) func() {
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := w.pg.HeartbeatDocument(ctx, docID); err != nil {
+					log.Printf("worker: heartbeat failed for %s: %v", docID, err)
+				}
+			}
+		}
+	}()
+	return cancel
+}
+
 // Notify enqueues a document for processing without a progress channel.
 // Non-blocking: if the channel is full the item is dropped (it will be
 // picked up on next restart via GetPendingDocuments).
@@ -199,6 +221,8 @@ func (w *Worker) ProcessDocument(ctx context.Context, docID string, progress cha
 	if !claimed {
 		return nil // another worker has it or it's already done
 	}
+	cancelHeartbeat := w.startHeartbeat(ctx, docID)
+	defer cancelHeartbeat()
 	return w.processDocumentStages(ctx, doc, progress)
 }
 
@@ -609,6 +633,8 @@ func (w *Worker) processBatch(ctx context.Context, batch []workItem) {
 		wg.Add(1)
 		go func(bd batchDoc) {
 			defer wg.Done()
+			cancelHeartbeat := w.startHeartbeat(ctx, bd.doc.ID)
+			defer cancelHeartbeat()
 			defer func() {
 				if bd.item.progress != nil {
 					close(bd.item.progress)
@@ -772,6 +798,8 @@ func (w *Worker) processBatch(ctx context.Context, batch []workItem) {
 			wg.Add(1)
 			go func(bd batchDoc) {
 				defer wg.Done()
+				cancelHeartbeat := w.startHeartbeat(ctx, bd.doc.ID)
+				defer cancelHeartbeat()
 				defer func() {
 					if bd.item.progress != nil {
 						close(bd.item.progress)

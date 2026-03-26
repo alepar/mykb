@@ -385,6 +385,21 @@ func (s *PostgresStore) FailDocument(ctx context.Context, id, failedStep, errMsg
 	return nil
 }
 
+// HeartbeatDocument refreshes locked_at for a PROCESSING document, signaling
+// that the worker is still actively working on it.
+func (s *PostgresStore) HeartbeatDocument(ctx context.Context, id string) error {
+	ct, err := s.pool.Exec(ctx,
+		`UPDATE documents SET locked_at = now(), updated_at = now()
+		 WHERE id = $1 AND state = 'PROCESSING'`, id)
+	if err != nil {
+		return fmt.Errorf("heartbeat document: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("document %s not found or not processing", id)
+	}
+	return nil
+}
+
 // AbandonStaleDocuments marks PROCESSING documents as ABANDONED if they have
 // been locked longer than the given timeout.
 func (s *PostgresStore) AbandonStaleDocuments(ctx context.Context, timeout time.Duration) (int, error) {
