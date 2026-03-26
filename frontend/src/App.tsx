@@ -8,7 +8,7 @@ export function App() {
   return (
     <BrowserRouter>
       <Nav />
-      <main className="container">
+      <main className="container" style={{ paddingLeft: 'calc(var(--pico-spacing) / 2)', paddingRight: 'calc(var(--pico-spacing) / 2)' }}>
         <Routes>
           <Route path="/" element={<StatusPage />} />
           <Route path="/ingest" element={<IngestPage />} />
