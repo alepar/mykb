@@ -1,11 +1,21 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"connectrpc.com/connect"
+
+	mykbv1 "mykb/gen/mykb/v1"
+	"mykb/gen/mykb/v1/mykbv1connect"
+	"mykb/internal/cliconfig"
 	"mykb/internal/wiki"
 )
 
@@ -73,8 +83,80 @@ func runWikiSync(args []string) {
 }
 
 func runWikiIngest(args []string) {
-	fmt.Fprintln(os.Stderr, "wiki ingest: not yet implemented")
-	os.Exit(2)
+	fs := flag.NewFlagSet("wiki ingest", flag.ExitOnError)
+	vaultOverride := fs.String("vault", "", "vault root (default: auto-discover)")
+	host := fs.String("host", "", "server address (default: from config)")
+	fs.Parse(args) //nolint:errcheck
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: mykb wiki ingest <file> [--vault DIR] [--host HOST]")
+		os.Exit(1)
+	}
+	relOrAbs := fs.Arg(0)
+
+	vaultRoot, err := resolveVault(*vaultOverride)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	cfg, err := wiki.LoadVaultConfig(vaultRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
+	// Resolve the file: accept abs path, vault-relative path, or cwd-relative path.
+	abs := relOrAbs
+	if !filepath.IsAbs(abs) {
+		// Try cwd first, then vault-root.
+		if _, err := os.Stat(abs); err != nil {
+			abs = filepath.Join(vaultRoot, relOrAbs)
+		}
+	}
+	abs, err = filepath.Abs(abs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve path: %v\n", err)
+		os.Exit(1)
+	}
+	rel, err := filepath.Rel(vaultRoot, abs)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		fmt.Fprintf(os.Stderr, "file %s is outside vault %s\n", abs, vaultRoot)
+		os.Exit(1)
+	}
+	body, err := os.ReadFile(abs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read %s: %v\n", abs, err)
+		os.Exit(1)
+	}
+
+	url, err := wiki.VaultPathToURL(cfg.Name, filepath.ToSlash(rel))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
+	clientCfg := cliconfig.Load("")
+	if *host != "" {
+		clientCfg.Host = *host
+	}
+	client := mykbv1connect.NewKBServiceClient(http.DefaultClient, clientCfg.Host)
+
+	hash := pipelineComputeContentHash(string(body))
+	resp, err := client.IngestMarkdown(context.Background(), connect.NewRequest(&mykbv1.IngestMarkdownRequest{
+		Url:         url,
+		Title:       "",
+		Body:        string(body),
+		ContentHash: hash,
+	}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest: %v\n", err)
+		os.Exit(1)
+	}
+	if resp.Msg.GetWasNoop() {
+		fmt.Printf("noop: %s (unchanged)\n", url)
+	} else {
+		fmt.Printf("ingested: %s (%d chunks)\n", url, resp.Msg.GetChunks())
+	}
 }
 
 func runWikiList(args []string) {
@@ -85,4 +167,23 @@ func runWikiList(args []string) {
 func runWikiLint(args []string) {
 	fmt.Fprintln(os.Stderr, "wiki lint: not yet implemented")
 	os.Exit(2)
+}
+
+// resolveVault returns the vault root, either from --vault or by walking up from cwd.
+func resolveVault(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return wiki.DiscoverVaultRoot(cwd)
+}
+
+// pipelineComputeContentHash mirrors pipeline.ComputeContentHash without the dep.
+// (CLI shouldn't import server-side packages like internal/pipeline.)
+func pipelineComputeContentHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
