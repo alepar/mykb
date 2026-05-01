@@ -566,6 +566,19 @@ func scanChunks(rows pgx.Rows) ([]Chunk, error) {
 	return chunks, nil
 }
 
+// SetContentHash updates the content_hash column on a document. Used by the
+// wiki ingest pipeline to commit the hash only after the pipeline succeeds —
+// keeping content_hash empty after a partial failure ensures the next sync
+// retries the document instead of seeing a matching hash and skipping.
+func (s *PostgresStore) SetContentHash(ctx context.Context, documentID, hash string) error {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE documents SET content_hash = $1, updated_at = now() WHERE id = $2`,
+		hash, documentID); err != nil {
+		return fmt.Errorf("set content_hash: %w", err)
+	}
+	return nil
+}
+
 // UpsertWikiDocument inserts or updates a wiki document by URL. Used by the
 // wiki ingest path. The unique constraint on documents.url ensures one row
 // per URL; on conflict, title and content_hash are updated.

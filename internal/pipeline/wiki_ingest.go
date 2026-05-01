@@ -68,9 +68,13 @@ func (w *WikiIngestor) Ingest(ctx context.Context, url, title, body, contentHash
 		return WikiIngestResult{DocumentID: existing.ID, Chunks: chunks, WasNoop: true}, nil
 	}
 
-	// Upsert document row (creates or updates by URL). Title and
-	// content_hash are updated; chunks are replaced below.
-	doc, err := w.pg.UpsertWikiDocument(ctx, url, title, contentHash)
+	// Upsert document row (creates or updates by URL). Title is updated;
+	// content_hash is deliberately left empty here and only committed at the
+	// very end of the pipeline. This keeps the idempotency check honest: if
+	// any pipeline step fails, content_hash stays empty (or retains its old
+	// value), so the next sync will re-run the full pipeline instead of
+	// silently skipping a broken document.
+	doc, err := w.pg.UpsertWikiDocument(ctx, url, title, "")
 	if err != nil {
 		return WikiIngestResult{}, fmt.Errorf("wiki ingest upsert: %w", err)
 	}
@@ -90,6 +94,14 @@ func (w *WikiIngestor) Ingest(ctx context.Context, url, title, body, contentHash
 	// Chunk (frontmatter stripped).
 	chunkedText := ChunkMarkdown(stripFrontmatterForChunking(body), ChunkOptions{}.withDefaults())
 	if len(chunkedText) == 0 {
+		// Even with no chunks, record chunk_count = 0 so the document row is
+		// consistent, and commit the content_hash so the next sync noops.
+		if err := w.pg.SetDocumentChunkCount(ctx, doc.ID, 0); err != nil {
+			return WikiIngestResult{}, fmt.Errorf("wiki ingest set chunk count (empty): %w", err)
+		}
+		if err := w.pg.SetContentHash(ctx, doc.ID, contentHash); err != nil {
+			return WikiIngestResult{}, fmt.Errorf("wiki ingest set hash (empty): %w", err)
+		}
 		return WikiIngestResult{DocumentID: doc.ID, Chunks: 0}, nil
 	}
 
@@ -126,6 +138,13 @@ func (w *WikiIngestor) Ingest(ctx context.Context, url, title, body, contentHash
 	// Update chunk_count on the document.
 	if err := w.pg.SetDocumentChunkCount(ctx, doc.ID, len(chunkedText)); err != nil {
 		return WikiIngestResult{}, fmt.Errorf("wiki ingest set chunk count: %w", err)
+	}
+
+	// Commit the content_hash only now, after the full pipeline has succeeded.
+	// Any failure above leaves content_hash empty/stale so the next sync
+	// retries rather than silently treating the document as up-to-date.
+	if err := w.pg.SetContentHash(ctx, doc.ID, contentHash); err != nil {
+		return WikiIngestResult{}, fmt.Errorf("wiki ingest set hash: %w", err)
 	}
 
 	return WikiIngestResult{DocumentID: doc.ID, Chunks: len(chunkedText)}, nil
