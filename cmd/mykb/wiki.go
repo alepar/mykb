@@ -1,8 +1,12 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"strings"
+
+	"mykb/internal/wiki"
 )
 
 func runWiki(args []string) {
@@ -40,8 +44,27 @@ func printWikiUsage() {
 // Stub implementations — replaced one by one in Tasks 12-16.
 
 func runWikiInit(args []string) {
-	fmt.Fprintln(os.Stderr, "wiki init: not yet implemented")
-	os.Exit(2)
+	fs := flag.NewFlagSet("wiki init", flag.ExitOnError)
+	dir := fs.String("vault", ".", "directory to scaffold the vault in")
+	name := fs.String("name", "", "wiki name (will appear in URL prefix wiki://<name>/...)")
+	fs.Parse(args) //nolint:errcheck
+
+	wikiName := *name
+	if wikiName == "" {
+		fmt.Fprint(os.Stderr, "Wiki name: ")
+		var s string
+		fmt.Fscanln(os.Stdin, &s)
+		wikiName = strings.TrimSpace(s)
+	}
+	if wikiName == "" {
+		fmt.Fprintln(os.Stderr, "wiki name is required")
+		os.Exit(1)
+	}
+	if err := wiki.ScaffoldVault(*dir, wikiName); err != nil {
+		fmt.Fprintf(os.Stderr, "scaffold failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("scaffolded wiki %q in %s\n", wikiName, *dir)
 }
 
 func runWikiSync(args []string) {
