@@ -39,12 +39,13 @@ type WikiIngestor struct {
 	pg       *storage.PostgresStore
 	embedder *Embedder
 	indexer  *Indexer
+	fs       *storage.FilesystemStore
 }
 
 // NewWikiIngestor wires the pieces. The caller owns lifecycle of the
 // underlying stores and the embedder.
-func NewWikiIngestor(pg *storage.PostgresStore, embedder *Embedder, indexer *Indexer) *WikiIngestor {
-	return &WikiIngestor{pg: pg, embedder: embedder, indexer: indexer}
+func NewWikiIngestor(pg *storage.PostgresStore, embedder *Embedder, indexer *Indexer, fs *storage.FilesystemStore) *WikiIngestor {
+	return &WikiIngestor{pg: pg, embedder: embedder, indexer: indexer, fs: fs}
 }
 
 // Ingest runs the pipeline for a single wiki document. Idempotent: if a
@@ -90,6 +91,11 @@ func (w *WikiIngestor) Ingest(ctx context.Context, url, title, body, contentHash
 	if err := w.pg.DeleteChunksByDocument(ctx, doc.ID); err != nil {
 		return WikiIngestResult{}, fmt.Errorf("wiki ingest clear chunks: %w", err)
 	}
+	// Clear any old chunk files on disk so leftover chunk_index entries from
+	// a previous larger version don't linger after re-ingest.
+	if err := w.fs.DeleteDocumentFiles(doc.ID); err != nil {
+		return WikiIngestResult{}, fmt.Errorf("wiki ingest clear chunk files: %w", err)
+	}
 
 	// Chunk (frontmatter stripped).
 	chunkedText := ChunkMarkdown(stripFrontmatterForChunking(body), ChunkOptions{}.withDefaults())
@@ -127,6 +133,15 @@ func (w *WikiIngestor) Ingest(ctx context.Context, url, title, body, contentHash
 			ChunkIndex: i,
 			Vector:     vectors[i],
 			Text:       txt,
+		}
+	}
+
+	// Persist chunk text to the filesystem cache. The search path's reranker
+	// reads chunk text by (document_id, chunk_index) from this location, so
+	// wiki documents must populate it just like raw-source documents do.
+	for i, txt := range chunkedText {
+		if err := w.fs.WriteChunkText(doc.ID, i, []byte(txt)); err != nil {
+			return WikiIngestResult{}, fmt.Errorf("wiki ingest write chunk file %d: %w", i, err)
 		}
 	}
 

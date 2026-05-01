@@ -247,7 +247,7 @@ func main() {
 	go w.Start(ctx)
 
 	// Wiki ingestor for synchronous wiki document ingestion
-	wikiIngestor := pipeline.NewWikiIngestor(pg, embedder, indexer)
+	wikiIngestor := pipeline.NewWikiIngestor(pg, embedder, indexer, fs)
 
 	// HTTP server with Connect handler + REST API
 	srv := server.NewServer(pg, fs, qdrant, meili, searcher, w, cfg, wikiIngestor)
