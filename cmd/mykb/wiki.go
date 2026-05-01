@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -284,13 +285,91 @@ func runWikiIngest(args []string) {
 }
 
 func runWikiList(args []string) {
-	fmt.Fprintln(os.Stderr, "wiki list: not yet implemented")
-	os.Exit(2)
+	flagSet := flag.NewFlagSet("wiki list", flag.ExitOnError)
+	vaultOverride := flagSet.String("vault", "", "vault root (default: auto-discover)")
+	flagSet.Parse(args) //nolint:errcheck
+
+	vaultRoot, err := resolveVault(*vaultOverride)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
+	type entry struct {
+		path, ptype, title string
+	}
+	var entries []entry
+	err = filepath.WalkDir(vaultRoot, func(path string, d ioFs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != vaultRoot && (strings.HasPrefix(name, ".") || name == ".templates") {
+				return ioFs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		rel, _ := filepath.Rel(vaultRoot, path)
+		base := filepath.Base(rel)
+		if base == "Log.md" || base == "CLAUDE.md" {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		fmStr, content := wiki.SplitFrontmatter(string(body))
+		fm, _ := wiki.ParseFrontmatter(fmStr)
+		ptype, _ := fm["type"].(string)
+		if ptype == "" {
+			ptype = "(no type)"
+		}
+		title := wiki.ExtractTitle(content, base)
+		entries = append(entries, entry{
+			path: filepath.ToSlash(rel), ptype: ptype, title: title,
+		})
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "walk: %v\n", err)
+		os.Exit(1)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
+	for _, e := range entries {
+		fmt.Printf("%-12s %-30s %s\n", e.ptype, e.path, e.title)
+	}
+	fmt.Printf("\n%d pages\n", len(entries))
 }
 
 func runWikiLint(args []string) {
-	fmt.Fprintln(os.Stderr, "wiki lint: not yet implemented")
-	os.Exit(2)
+	flagSet := flag.NewFlagSet("wiki lint", flag.ExitOnError)
+	vaultOverride := flagSet.String("vault", "", "vault root (default: auto-discover)")
+	flagSet.Parse(args) //nolint:errcheck
+
+	vaultRoot, err := resolveVault(*vaultOverride)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	report, err := wiki.Lint(vaultRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "lint: %v\n", err)
+		os.Exit(2)
+	}
+	for _, e := range report.Errors {
+		fmt.Printf("ERROR %s: %s\n", e.Path, e.Message)
+	}
+	for _, w := range report.Warnings {
+		fmt.Printf("WARN  %s: %s\n", w.Path, w.Message)
+	}
+	fmt.Printf("\n%d errors, %d warnings\n", len(report.Errors), len(report.Warnings))
+	if len(report.Errors) > 0 {
+		os.Exit(1)
+	}
 }
 
 // resolveVault returns the vault root, either from --vault or by walking up from cwd.
