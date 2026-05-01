@@ -32,18 +32,19 @@ type Document struct {
 	CrawledAt   *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	ContentHash string // sha256 of body for wiki docs; empty for raw sources
 }
 
 const documentColumns = `id, url, step, state, failed_step, is_retriable,
 	error, title, chunk_count, retry_count, next_retry_at,
-	locked_at, locked_by, crawled_at, created_at, updated_at`
+	locked_at, locked_by, crawled_at, created_at, updated_at, COALESCE(content_hash, '')`
 
 func scanDocument(row pgx.Row) (Document, error) {
 	var d Document
 	err := row.Scan(&d.ID, &d.URL, &d.Step, &d.State, &d.FailedStep,
 		&d.IsRetriable, &d.Error, &d.Title, &d.ChunkCount,
 		&d.RetryCount, &d.NextRetryAt, &d.LockedAt, &d.LockedBy,
-		&d.CrawledAt, &d.CreatedAt, &d.UpdatedAt)
+		&d.CrawledAt, &d.CreatedAt, &d.UpdatedAt, &d.ContentHash)
 	return d, err
 }
 
@@ -538,7 +539,7 @@ func scanDocuments(rows pgx.Rows) ([]Document, error) {
 		if err := rows.Scan(&d.ID, &d.URL, &d.Step, &d.State, &d.FailedStep,
 			&d.IsRetriable, &d.Error, &d.Title, &d.ChunkCount,
 			&d.RetryCount, &d.NextRetryAt, &d.LockedAt, &d.LockedBy,
-			&d.CrawledAt, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			&d.CrawledAt, &d.CreatedAt, &d.UpdatedAt, &d.ContentHash); err != nil {
 			return nil, fmt.Errorf("scan document: %w", err)
 		}
 		docs = append(docs, d)
@@ -563,4 +564,51 @@ func scanChunks(rows pgx.Rows) ([]Chunk, error) {
 		return nil, fmt.Errorf("rows error: %w", err)
 	}
 	return chunks, nil
+}
+
+// UpsertWikiDocument inserts or updates a wiki document by URL. Used by the
+// wiki ingest path. The unique constraint on documents.url ensures one row
+// per URL; on conflict, title and content_hash are updated.
+func (s *PostgresStore) UpsertWikiDocument(ctx context.Context, url, title, contentHash string) (Document, error) {
+	const q = `
+		INSERT INTO documents (url, title, content_hash, step, state)
+		VALUES ($1, $2, $3, 'DONE', 'COMPLETED')
+		ON CONFLICT (url) DO UPDATE SET
+			title = EXCLUDED.title,
+			content_hash = EXCLUDED.content_hash,
+			updated_at = now()
+		RETURNING ` + documentColumns
+	d, err := scanDocument(s.pool.QueryRow(ctx, q, url, title, contentHash))
+	if err != nil {
+		return Document{}, fmt.Errorf("upsert wiki document: %w", err)
+	}
+	return d, nil
+}
+
+// ListWikiDocuments returns wiki documents for a given wiki name, identified
+// by their "wiki://<wikiName>/" URL prefix. Used by `mykb wiki sync` to
+// compute the three-way diff.
+func (s *PostgresStore) ListWikiDocuments(ctx context.Context, wikiName string) ([]Document, error) {
+	prefix := "wiki://" + wikiName + "/"
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, url, COALESCE(title, ''), COALESCE(content_hash, '')
+		 FROM documents
+		 WHERE url LIKE $1
+		 ORDER BY url`,
+		prefix+"%")
+	if err != nil {
+		return nil, fmt.Errorf("list wiki documents: %w", err)
+	}
+	defer rows.Close()
+	var out []Document
+	for rows.Next() {
+		var d Document
+		var title string
+		if err := rows.Scan(&d.ID, &d.URL, &title, &d.ContentHash); err != nil {
+			return nil, fmt.Errorf("scan wiki document: %w", err)
+		}
+		d.Title = &title
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }

@@ -578,3 +578,63 @@ func TestGetDocumentsByIDs(t *testing.T) {
 		t.Fatalf("unexpected IDs: %v", ids)
 	}
 }
+
+func TestListWikiDocuments(t *testing.T) {
+	pg := newTestStore(t)
+	ctx := context.Background()
+
+	// Seed: two wiki docs in "main", one in "personal", one raw source.
+	main1, err := pg.UpsertWikiDocument(ctx, "wiki://main/concepts/foo.md", "Foo", "abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	main2, err := pg.UpsertWikiDocument(ctx, "wiki://main/entities/bar.md", "Bar", "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pg.UpsertWikiDocument(ctx, "wiki://personal/x.md", "X", "xyz"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pg.InsertDocument(ctx, "https://example.com/raw"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := pg.ListWikiDocuments(ctx, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 wiki docs in main, got %d", len(got))
+	}
+	urls := map[string]string{}
+	for _, d := range got {
+		urls[d.URL] = d.ContentHash
+	}
+	if urls[main1.URL] != "abc123" || urls[main2.URL] != "def456" {
+		t.Errorf("unexpected hashes: %+v", urls)
+	}
+}
+
+func TestUpsertWikiDocumentIdempotent(t *testing.T) {
+	pg := newTestStore(t)
+	ctx := context.Background()
+
+	doc1, err := pg.UpsertWikiDocument(ctx, "wiki://main/concepts/foo.md", "Foo", "hash-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc2, err := pg.UpsertWikiDocument(ctx, "wiki://main/concepts/foo.md", "Foo Updated", "hash-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc1.ID != doc2.ID {
+		t.Errorf("expected same ID on upsert, got %s then %s", doc1.ID, doc2.ID)
+	}
+	if doc2.ContentHash != "hash-v2" {
+		t.Errorf("expected updated hash, got %q", doc2.ContentHash)
+	}
+	if doc2.Title == nil || *doc2.Title != "Foo Updated" {
+		t.Errorf("expected updated title, got %v", doc2.Title)
+	}
+}
