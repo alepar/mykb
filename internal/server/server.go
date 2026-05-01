@@ -4,26 +4,38 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 
 	"connectrpc.com/connect"
 
 	mykbv1 "mykb/gen/mykb/v1"
 	"mykb/internal/config"
+	"mykb/internal/pipeline"
 	"mykb/internal/search"
 	"mykb/internal/storage"
+	"mykb/internal/wiki"
 	"mykb/internal/worker"
 )
 
+// wikiNameRegexp validates that a wiki name only contains safe characters,
+// preventing LIKE injection in Postgres queries.
+var wikiNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+func validWikiName(s string) bool {
+	return wikiNameRegexp.MatchString(s)
+}
+
 // Server implements the mykbv1connect.KBServiceHandler interface.
 type Server struct {
-	pg       *storage.PostgresStore
-	fs       *storage.FilesystemStore
-	qdrant   *storage.QdrantStore
-	meili    *storage.MeilisearchStore
-	searcher *search.HybridSearcher
-	worker   *worker.Worker
-	cfg      *config.Config
+	pg           *storage.PostgresStore
+	fs           *storage.FilesystemStore
+	qdrant       *storage.QdrantStore
+	meili        *storage.MeilisearchStore
+	searcher     *search.HybridSearcher
+	worker       *worker.Worker
+	cfg          *config.Config
+	wikiIngestor *pipeline.WikiIngestor
 }
 
 // NewServer creates a Server wired to all dependencies.
@@ -35,15 +47,17 @@ func NewServer(
 	searcher *search.HybridSearcher,
 	w *worker.Worker,
 	cfg *config.Config,
+	wikiIngestor *pipeline.WikiIngestor,
 ) *Server {
 	return &Server{
-		pg:       pg,
-		fs:       fs,
-		qdrant:   qdrant,
-		meili:    meili,
-		searcher: searcher,
-		worker:   w,
-		cfg:      cfg,
+		pg:           pg,
+		fs:           fs,
+		qdrant:       qdrant,
+		meili:        meili,
+		searcher:     searcher,
+		worker:       w,
+		cfg:          cfg,
+		wikiIngestor: wikiIngestor,
 	}
 }
 
@@ -295,6 +309,71 @@ func (s *Server) deleteDocument(ctx context.Context, id string) error {
 	}
 
 	return nil
+}
+
+// IngestMarkdown ingests a single wiki document synchronously. The body
+// includes frontmatter; the pipeline strips it before chunking. Idempotent
+// on (url, content_hash).
+func (s *Server) IngestMarkdown(ctx context.Context, req *connect.Request[mykbv1.IngestMarkdownRequest]) (*connect.Response[mykbv1.IngestMarkdownResponse], error) {
+	url := req.Msg.GetUrl()
+	if !wiki.IsWikiURL(url) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("url must use wiki:// scheme: %q", url))
+	}
+	// Validate the wiki name extracted from the URL — guards against LIKE injection
+	// downstream and ensures URLs round-trip cleanly.
+	wikiName, vaultPath, err := wiki.URLToVaultPath(url)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("malformed wiki url: %v", err))
+	}
+	if !validWikiName(wikiName) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid wiki name %q (must match [a-zA-Z0-9_-]+)", wikiName))
+	}
+
+	body := req.Msg.GetBody()
+	hash := req.Msg.GetContentHash()
+	if hash == "" {
+		hash = pipeline.ComputeContentHash(body)
+	}
+
+	title := req.Msg.GetTitle()
+	if title == "" {
+		title = wiki.ExtractTitle(body, vaultPath)
+	}
+
+	res, err := s.wikiIngestor.Ingest(ctx, url, title, body, hash)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&mykbv1.IngestMarkdownResponse{
+		DocumentId: res.DocumentID,
+		Chunks:     int32(res.Chunks),
+		WasNoop:    res.WasNoop,
+	}), nil
+}
+
+// ListWikiDocuments returns (id, url, content_hash) for all wiki documents
+// belonging to the given wiki. Used by `mykb wiki sync` for diffing.
+func (s *Server) ListWikiDocuments(ctx context.Context, req *connect.Request[mykbv1.ListWikiDocumentsRequest]) (*connect.Response[mykbv1.ListWikiDocumentsResponse], error) {
+	wikiName := req.Msg.GetWikiName()
+	if wikiName == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("wiki_name is required"))
+	}
+	if !validWikiName(wikiName) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid wiki name %q (must match [a-zA-Z0-9_-]+)", wikiName))
+	}
+	docs, err := s.pg.ListWikiDocuments(ctx, wikiName)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list wiki documents: %v", err))
+	}
+	out := make([]*mykbv1.WikiDocument, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, &mykbv1.WikiDocument{
+			Id:          d.ID,
+			Url:         d.URL,
+			ContentHash: d.ContentHash,
+		})
+	}
+	return connect.NewResponse(&mykbv1.ListWikiDocumentsResponse{Documents: out}), nil
 }
 
 // documentToProto converts a storage.Document to a proto Document message.

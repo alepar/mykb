@@ -211,8 +211,11 @@ func main() {
 	w := worker.NewWorker(pg, fs, crawler, embedder, indexer, cfg, workerID)
 	go w.Start(ctx)
 
+	// Wiki ingestor for synchronous wiki document ingestion
+	wikiIngestor := pipeline.NewWikiIngestor(pg, embedder, indexer)
+
 	// HTTP server with Connect handler + REST API
-	srv := server.NewServer(pg, fs, qdrant, meili, searcher, w, cfg)
+	srv := server.NewServer(pg, fs, qdrant, meili, searcher, w, cfg, wikiIngestor)
 
 	mux := http.NewServeMux()
 
