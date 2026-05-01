@@ -1,0 +1,74 @@
+services:
+  mykb:
+    build: .
+    ports:
+      - "9092:9091"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      meilisearch:
+        condition: service_healthy
+      crawl4ai:
+        condition: service_started
+    env_file: .env
+    environment:
+      POSTGRES_DSN: postgres://mykb:mykb@postgres:5432/mykb?sslmode=disable
+      QDRANT_GRPC_HOST: qdrant:6334
+      MEILISEARCH_HOST: http://meilisearch:7700
+      CRAWL4AI_URL: http://crawl4ai:11235
+      DATA_DIR: /data/documents
+    volumes:
+      - mykb_documents:/data/documents
+
+  postgres:
+    image: postgres:17
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: mykb
+      POSTGRES_PASSWORD: mykb
+      POSTGRES_DB: mykb
+    volumes:
+      - mykb_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mykb -d mykb"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    ports:
+      - "6337:6334"
+      - "6338:6333"
+    volumes:
+      - mykb_qdrant:/qdrant/storage
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.37.0
+    ports:
+      - "7702:7700"
+    environment:
+      MEILI_MASTER_KEY: ${MEILISEARCH_KEY}
+    volumes:
+      - mykb_meili:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7700/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  crawl4ai:
+    image: unclecode/crawl4ai:latest
+    ports:
+      - "11236:11235"
+
+# Named volumes — wiped by `down -v`. Using host bind mounts (as the dev
+# stack does) would persist data across teardowns and pollute test runs.
+volumes:
+  mykb_documents:
+  mykb_postgres:
+  mykb_qdrant:
+  mykb_meili:
