@@ -68,6 +68,37 @@ func TestParseFrontmatter(t *testing.T) {
 	}
 }
 
+func TestParseFrontmatterNullValues(t *testing.T) {
+	tests := []struct {
+		name, in    string
+		key         string
+		wantPresent bool
+		wantString  string
+	}{
+		{"explicit_null", "superseded_by: null\n", "superseded_by", true, ""},
+		{"empty_value", "superseded_by:\n", "superseded_by", true, ""},
+		{"tilde_null", "superseded_by: ~\n", "superseded_by", true, ""},
+		{"quoted_null_string", `superseded_by: "null"`, "superseded_by", true, "null"},
+		{"actual_value", "superseded_by: synthesis/x.md\n", "superseded_by", true, "synthesis/x.md"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseFrontmatter(tt.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			val, ok := got[tt.key]
+			if ok != tt.wantPresent {
+				t.Fatalf("present: got %v want %v", ok, tt.wantPresent)
+			}
+			s, _ := val.(string)
+			if s != tt.wantString {
+				t.Errorf("got %q want %q", s, tt.wantString)
+			}
+		})
+	}
+}
+
 func TestExtractTitle(t *testing.T) {
 	tests := []struct {
 		name, body, fallback, want string

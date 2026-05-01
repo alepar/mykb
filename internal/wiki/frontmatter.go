@@ -63,6 +63,9 @@ func ParseFrontmatter(fm string) (map[string]any, error) {
 func nodeToAny(n *yaml.Node) (any, error) {
 	switch n.Kind {
 	case yaml.ScalarNode:
+		if n.Tag == "!!null" {
+			return "", nil
+		}
 		return n.Value, nil
 	case yaml.SequenceNode:
 		seq := make([]any, len(n.Content))
