@@ -9,6 +9,7 @@ import (
 	ioFs "io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -46,11 +47,11 @@ func runWiki(args []string) {
 
 func printWikiUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  mykb wiki init [--vault DIR]                  scaffold a new wiki vault")
-	fmt.Fprintln(os.Stderr, "  mykb wiki sync [--vault DIR] [--host HOST]    sync vault with mykb (diff-based)")
-	fmt.Fprintln(os.Stderr, "  mykb wiki ingest <file> [--vault DIR] [--host HOST]   ingest a single file")
-	fmt.Fprintln(os.Stderr, "  mykb wiki list [--vault DIR]                  list vault inventory")
-	fmt.Fprintln(os.Stderr, "  mykb wiki lint [--vault DIR]                  validate vault structure")
+	fmt.Fprintln(os.Stderr, "  mykb wiki init [--vault DIR]                              scaffold a new wiki vault")
+	fmt.Fprintln(os.Stderr, "  mykb wiki sync [--vault DIR] [--host HOST] [--force]      sync vault with mykb (diff-based; --force re-ingests every file)")
+	fmt.Fprintln(os.Stderr, "  mykb wiki ingest <file> [--vault DIR] [--host HOST] [--force]   ingest a single file (--force bypasses content_hash idempotency)")
+	fmt.Fprintln(os.Stderr, "  mykb wiki list [--vault DIR]                              list vault inventory")
+	fmt.Fprintln(os.Stderr, "  mykb wiki lint [--vault DIR]                              validate vault structure")
 }
 
 // Stub implementations — replaced one by one in Tasks 12-16.
@@ -59,30 +60,114 @@ func runWikiInit(args []string) {
 	fs := flag.NewFlagSet("wiki init", flag.ExitOnError)
 	dir := fs.String("vault", ".", "directory to scaffold the vault in")
 	name := fs.String("name", "", "wiki name (will appear in URL prefix wiki://<name>/...)")
+	skipSubmodule := fs.Bool("no-submodule", false, "skip registering the deep-research git submodule (offline init)")
 	fs.Parse(args) //nolint:errcheck
 
 	wikiName := *name
 	if wikiName == "" {
+		// On re-run, prefer the name from the existing config rather than re-prompting.
+		if cfg, err := wiki.LoadVaultConfig(*dir); err == nil {
+			wikiName = cfg.Name
+		}
+	}
+	if wikiName == "" {
 		fmt.Fprint(os.Stderr, "Wiki name: ")
 		var s string
-		fmt.Fscanln(os.Stdin, &s)
+		_, _ = fmt.Fscanln(os.Stdin, &s)
 		wikiName = strings.TrimSpace(s)
 	}
 	if wikiName == "" {
 		fmt.Fprintln(os.Stderr, "wiki name is required")
 		os.Exit(1)
 	}
-	if err := wiki.ScaffoldVault(*dir, wikiName); err != nil {
+
+	result, err := wiki.ScaffoldVault(*dir, wikiName)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "scaffold failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("scaffolded wiki %q in %s\n", wikiName, *dir)
+	fmt.Printf("scaffolded wiki %q in %s: %d files written, %d already present\n",
+		wikiName, *dir, len(result.Written), len(result.Skipped))
+
+	if *skipSubmodule {
+		fmt.Println("skipping deep-research submodule (--no-submodule)")
+		return
+	}
+
+	if _, err := ensureGitRepo(*dir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not ensure git repo: %v\n", err)
+		fmt.Fprintln(os.Stderr, "skipping submodule registration; init the repo and re-run `mykb wiki init` to add it")
+		return
+	}
+	if err := ensureDeepResearchSubmodule(*dir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not register deep-research submodule: %v\n", err)
+		fmt.Fprintln(os.Stderr, "the wiki-research skill will not be able to invoke deep-research until this is resolved")
+	}
+}
+
+// ensureGitRepo runs `git init` in dir if it is not already a git repo.
+// Returns true if a new repo was initialized.
+func ensureGitRepo(dir string) (bool, error) {
+	gitPath := filepath.Join(dir, ".git")
+	if _, err := os.Stat(gitPath); err == nil {
+		return false, nil
+	}
+	cmd := exec.Command("git", "-C", dir, "init")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return false, fmt.Errorf("git init: %w", err)
+	}
+	return true, nil
+}
+
+// ensureDeepResearchSubmodule registers the upstream claude-deep-research-skill
+// repo as a git submodule at .claude/skills/deep-research, if not already
+// registered. Idempotent: a no-op when the submodule path is already in
+// .gitmodules.
+func ensureDeepResearchSubmodule(dir string) error {
+	if registered, err := submoduleRegistered(dir, wiki.DeepResearchSubmodulePath); err != nil {
+		return err
+	} else if registered {
+		fmt.Printf("deep-research submodule already registered at %s\n", wiki.DeepResearchSubmodulePath)
+		return nil
+	}
+	fmt.Printf("registering deep-research submodule at %s ...\n", wiki.DeepResearchSubmodulePath)
+	cmd := exec.Command("git", "-C", dir, "submodule", "add",
+		wiki.DeepResearchSubmoduleURL, wiki.DeepResearchSubmodulePath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git submodule add: %w", err)
+	}
+	return nil
+}
+
+// submoduleRegistered reports whether the given vault-relative path appears as
+// a registered submodule in <dir>/.gitmodules.
+func submoduleRegistered(dir, submodulePath string) (bool, error) {
+	data, err := os.ReadFile(filepath.Join(dir, ".gitmodules"))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// Match a `path = <submodulePath>` line; this is what `git submodule add` writes.
+	needle := "path = " + submodulePath
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == needle {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func runWikiSync(args []string) {
 	fs := flag.NewFlagSet("wiki sync", flag.ExitOnError)
 	vaultOverride := fs.String("vault", "", "vault root (default: auto-discover)")
 	host := fs.String("host", "", "server address (default: from config)")
+	force := fs.Bool("force", false, "re-ingest every local file regardless of content_hash match")
 	fs.Parse(args) //nolint:errcheck
 
 	vaultRoot, err := resolveVault(*vaultOverride)
@@ -156,7 +241,7 @@ func runWikiSync(args []string) {
 		remote[d.GetUrl()] = remoteEntry{id: d.GetId(), hash: d.GetContentHash()}
 	}
 
-	// Three-way diff.
+	// Three-way diff. With --force, every local file is treated as changed.
 	var added, changed, deleted int
 	seen := map[string]bool{}
 	for _, l := range locals {
@@ -170,13 +255,13 @@ func runWikiSync(args []string) {
 		existing, ok := remote[url]
 		switch {
 		case !ok:
-			if err := callIngest(client, url, string(body), l.hash); err != nil {
+			if err := callIngest(client, url, string(body), l.hash, *force); err != nil {
 				fmt.Fprintf(os.Stderr, "ingest %s: %v\n", url, err)
 				continue
 			}
 			added++
-		case existing.hash != l.hash:
-			if err := callIngest(client, url, string(body), l.hash); err != nil {
+		case *force || existing.hash != l.hash:
+			if err := callIngest(client, url, string(body), l.hash, *force); err != nil {
 				fmt.Fprintf(os.Stderr, "ingest %s: %v\n", url, err)
 				continue
 			}
@@ -194,15 +279,20 @@ func runWikiSync(args []string) {
 		deleted++
 	}
 
-	fmt.Printf("sync: +%d ~%d -%d (vault has %d files, remote had %d)\n",
-		added, changed, deleted, len(locals), len(remote))
+	mode := ""
+	if *force {
+		mode = " (force)"
+	}
+	fmt.Printf("sync%s: +%d ~%d -%d (vault has %d files, remote had %d)\n",
+		mode, added, changed, deleted, len(locals), len(remote))
 }
 
-func callIngest(client mykbv1connect.KBServiceClient, url, body, hash string) error {
+func callIngest(client mykbv1connect.KBServiceClient, url, body, hash string, force bool) error {
 	_, err := client.IngestMarkdown(context.Background(), connect.NewRequest(&mykbv1.IngestMarkdownRequest{
 		Url:         url,
 		Body:        body,
 		ContentHash: hash,
+		Force:       force,
 	}))
 	return err
 }
@@ -211,10 +301,11 @@ func runWikiIngest(args []string) {
 	fs := flag.NewFlagSet("wiki ingest", flag.ExitOnError)
 	vaultOverride := fs.String("vault", "", "vault root (default: auto-discover)")
 	host := fs.String("host", "", "server address (default: from config)")
+	force := fs.Bool("force", false, "bypass content_hash idempotency and re-ingest unconditionally")
 	fs.Parse(args) //nolint:errcheck
 
 	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: mykb wiki ingest <file> [--vault DIR] [--host HOST]")
+		fmt.Fprintln(os.Stderr, "Usage: mykb wiki ingest <file> [--vault DIR] [--host HOST] [--force]")
 		os.Exit(1)
 	}
 	relOrAbs := fs.Arg(0)
@@ -272,6 +363,7 @@ func runWikiIngest(args []string) {
 		Title:       "",
 		Body:        string(body),
 		ContentHash: hash,
+		Force:       *force,
 	}))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ingest: %v\n", err)

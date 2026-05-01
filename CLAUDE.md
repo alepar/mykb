@@ -90,6 +90,10 @@ mykb wiki lint [--vault DIR]                 # validate frontmatter, wikilinks, 
 
 **Wiki name format:** `^[a-zA-Z0-9_-]+$` — validated at vault config load (`internal/wiki/config.go`) and at the proto boundary in the server.
 
+**Skills shipped with each vault** (under `<vault>/.claude/skills/`):
+- `wiki-research/` — disciplined research loop (mykb-first retrieval → optional seeded web research → cross-check → wiki page updates). Files are embedded in the `mykb` binary via `//go:embed` and written by `mykb wiki init`. Update by upgrading mykb and re-running `init` (idempotent).
+- `deep-research/` — pinned as a git submodule pointing at https://github.com/199-biotechnologies/claude-deep-research-skill. `mykb wiki init` shells out to `git submodule add` to register it. Vault clones need `git submodule update --init --recursive` to populate. The `wiki-research` skill invokes `deep-research` as a subordinate skill via the Skill tool.
+
 ## Data Preservation
 
 **IMPORTANT: Protect local database contents.** Data is stored in `~/.local/share/mykb/` (machine-local, not synced between machines). The PostgreSQL `documents` table records which URLs have been ingested — this metadata is very hard to recreate (requires manually rediscovering all original URLs). Never run `docker compose down -v` or otherwise destroy the Postgres volume. Avoid `DELETE FROM documents` unless explicitly asked.

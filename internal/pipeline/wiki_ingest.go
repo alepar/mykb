@@ -50,23 +50,29 @@ func NewWikiIngestor(pg *storage.PostgresStore, embedder *Embedder, indexer *Ind
 
 // Ingest runs the pipeline for a single wiki document. Idempotent: if a
 // document with the given URL already exists with a matching content_hash,
-// returns a no-op result without re-embedding.
+// returns a no-op result without re-embedding. Pass force=true to bypass
+// the idempotency check and re-run the full pipeline unconditionally
+// (used to repair documents whose downstream state — chunk text cache,
+// vectors, FTS index — has drifted from the postgres row).
 //
 // The url MUST be a wiki:// URL. The body is the full markdown, including
 // frontmatter — the function strips it before chunking. The caller has
 // already computed `contentHash` from the same body.
-func (w *WikiIngestor) Ingest(ctx context.Context, url, title, body, contentHash string) (WikiIngestResult, error) {
+func (w *WikiIngestor) Ingest(ctx context.Context, url, title, body, contentHash string, force bool) (WikiIngestResult, error) {
 	if !wiki.IsWikiURL(url) {
 		return WikiIngestResult{}, fmt.Errorf("wiki ingest: not a wiki URL: %q", url)
 	}
 
 	// Idempotency: if the existing doc has the same hash, skip everything.
-	if existing, err := w.pg.GetDocumentByURL(ctx, url); err == nil && existing.ContentHash == contentHash && contentHash != "" {
-		chunks := 0
-		if existing.ChunkCount != nil {
-			chunks = *existing.ChunkCount
+	// Bypassed when force=true.
+	if !force {
+		if existing, err := w.pg.GetDocumentByURL(ctx, url); err == nil && existing.ContentHash == contentHash && contentHash != "" {
+			chunks := 0
+			if existing.ChunkCount != nil {
+				chunks = *existing.ChunkCount
+			}
+			return WikiIngestResult{DocumentID: existing.ID, Chunks: chunks, WasNoop: true}, nil
 		}
-		return WikiIngestResult{DocumentID: existing.ID, Chunks: chunks, WasNoop: true}, nil
 	}
 
 	// Upsert document row (creates or updates by URL). Title is updated;

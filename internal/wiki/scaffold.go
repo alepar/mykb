@@ -1,10 +1,31 @@
 package wiki
 
 import (
+	"embed"
 	"fmt"
+	ioFs "io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 )
+
+//go:embed skills/wiki-research/*
+var embeddedSkills embed.FS
+
+// DeepResearchSubmoduleURL is the upstream git URL for the claude-deep-research-skill,
+// which mykb wiki vaults install as a submodule under .claude/skills/deep-research.
+const DeepResearchSubmoduleURL = "https://github.com/199-biotechnologies/claude-deep-research-skill.git"
+
+// DeepResearchSubmodulePath is the vault-relative path where the deep-research
+// skill is registered as a git submodule.
+const DeepResearchSubmodulePath = ".claude/skills/deep-research"
+
+// ScaffoldResult reports what ScaffoldVault did. Both lists are vault-relative,
+// in slash-separated form, sorted for deterministic output.
+type ScaffoldResult struct {
+	Written []string // files created on this run
+	Skipped []string // files that already existed and were preserved
+}
 
 // ScaffoldVault writes the initial vault layout into `dir`. It creates:
 //   - mykb-wiki.toml (with the given wiki name)
@@ -12,14 +33,19 @@ import (
 //   - Log.md (with header)
 //   - entities/, concepts/, synthesis/ (with .gitkeep)
 //   - .templates/{entity,concept,synthesis}.md
+//   - .claude/skills/wiki-research/{SKILL.md,playbook.md,examples.md}
 //
-// Returns an error if any required file already exists.
-func ScaffoldVault(dir, wikiName string) error {
+// Idempotent: existing files are preserved byte-for-byte; only missing files
+// are written. Re-running on an already-scaffolded vault is a no-op success.
+//
+// Note: ScaffoldVault does NOT register the deep-research git submodule; that
+// step shells out to `git` and is the caller's responsibility (see cmd/mykb/wiki.go).
+func ScaffoldVault(dir, wikiName string) (*ScaffoldResult, error) {
 	if wikiName == "" {
-		return fmt.Errorf("wiki name is empty")
+		return nil, fmt.Errorf("wiki name is empty")
 	}
 	if !wikiNameRegexp.MatchString(wikiName) {
-		return fmt.Errorf("wiki name %q is invalid (must match [a-zA-Z0-9_-]+)", wikiName)
+		return nil, fmt.Errorf("wiki name %q is invalid (must match [a-zA-Z0-9_-]+)", wikiName)
 	}
 
 	files := map[string]string{
@@ -34,19 +60,62 @@ func ScaffoldVault(dir, wikiName string) error {
 		".templates/synthesis.md": templateSynthesis,
 	}
 
-	for path, content := range files {
+	skillFiles, err := embeddedSkillFiles()
+	if err != nil {
+		return nil, fmt.Errorf("load embedded skill files: %w", err)
+	}
+	for path, content := range skillFiles {
+		files[path] = content
+	}
+
+	paths := make([]string, 0, len(files))
+	for p := range files {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	result := &ScaffoldResult{}
+	for _, path := range paths {
 		full := filepath.Join(dir, path)
 		if _, err := os.Stat(full); err == nil {
-			return fmt.Errorf("file already exists: %s", path)
+			result.Skipped = append(result.Skipped, path)
+			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			return err
+			return nil, err
 		}
-		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-			return err
+		if err := os.WriteFile(full, []byte(files[path]), 0o644); err != nil {
+			return nil, err
 		}
+		result.Written = append(result.Written, path)
 	}
-	return nil
+	return result, nil
+}
+
+// embeddedSkillFiles returns a map of vault-relative path -> file content for
+// every file shipped under the embedded skills/ tree. Paths are rewritten to
+// land under .claude/skills/ in the target vault.
+func embeddedSkillFiles() (map[string]string, error) {
+	out := map[string]string{}
+	err := ioFs.WalkDir(embeddedSkills, "skills", func(path string, d ioFs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		data, err := embeddedSkills.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		// "skills/wiki-research/SKILL.md" -> ".claude/skills/wiki-research/SKILL.md"
+		out[filepath.ToSlash(filepath.Join(".claude", path))] = string(data)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func vaultClaudeMD(wikiName string) string {
@@ -102,6 +171,39 @@ to raw sources by their https:// URLs.
 
 ## Templates
 See .templates/entity.md, .templates/concept.md, .templates/synthesis.md.
+
+## Skills
+Two Claude skills ship inside the vault under .claude/skills/:
+
+- **wiki-research** (in .claude/skills/wiki-research/) — disciplined research loop:
+  search mykb first, optionally invoke deep-research with mykb context as a
+  seed, cross-check, write a synthesis page. Use it for any non-trivial
+  research request. Embedded in the mykb binary; updates with new mykb releases.
+
+- **deep-research** (in .claude/skills/deep-research/) — pinned as a git submodule
+  pointing at https://github.com/199-biotechnologies/claude-deep-research-skill.
+  Drives multi-source web research with citation tracking. The wiki-research
+  skill calls into it as needed; you generally won't invoke it directly.
+
+## Keeping skills up to date
+The deep-research skill is a git submodule, so its version is pinned in this
+vault's commit history. To populate, update, or roll back:
+
+    # After cloning the vault, populate the deep-research submodule:
+    git submodule update --init --recursive
+
+    # Periodically (e.g., monthly) check for upstream updates:
+    git submodule update --remote .claude/skills/deep-research
+    git -C .claude/skills/deep-research log --oneline -10   # review what changed
+    git add .claude/skills/deep-research && git commit -m "bump deep-research skill"
+
+    # Roll back to a prior commit if an update breaks things:
+    cd .claude/skills/deep-research && git checkout <prior-sha> && cd -
+    git add .claude/skills/deep-research && git commit -m "pin deep-research to <prior-sha>"
+
+To update wiki-research itself, upgrade mykb (e.g., 'just cli' from the mykb
+repo) and re-run 'mykb wiki init' here — re-running is idempotent and only
+writes missing or new scaffold files.
 `, wikiName, wikiName)
 }
 

@@ -340,7 +340,7 @@ func (s *Server) IngestMarkdown(ctx context.Context, req *connect.Request[mykbv1
 		title = wiki.ExtractTitle(body, vaultPath)
 	}
 
-	res, err := s.wikiIngestor.Ingest(ctx, url, title, body, hash)
+	res, err := s.wikiIngestor.Ingest(ctx, url, title, body, hash, req.Msg.GetForce())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

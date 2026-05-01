@@ -165,7 +165,7 @@ func handleDeepHealth(
 		}()
 
 		wikiHash := pipeline.ComputeContentHash(wikiSelfTestBody)
-		wikiResult, err := wikiIngestor.Ingest(ctx, wikiSelfTestURL, "Healthz", wikiSelfTestBody, wikiHash)
+		wikiResult, err := wikiIngestor.Ingest(ctx, wikiSelfTestURL, "Healthz", wikiSelfTestBody, wikiHash, false)
 		stages["wiki_ingest"] = time.Since(wikiStart).Round(time.Millisecond).String()
 		if err != nil {
 			respond("fail", fmt.Sprintf("wiki ingest: %v", err))

@@ -907,6 +907,7 @@ type IngestMarkdownRequest struct {
 	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`                                // optional; otherwise extracted by the server
 	Body          string                 `protobuf:"bytes,3,opt,name=body,proto3" json:"body,omitempty"`                                  // markdown including frontmatter
 	ContentHash   string                 `protobuf:"bytes,4,opt,name=content_hash,json=contentHash,proto3" json:"content_hash,omitempty"` // sha256 of body, for idempotent re-ingest
+	Force         bool                   `protobuf:"varint,5,opt,name=force,proto3" json:"force,omitempty"`                               // if true, skip content_hash idempotency and re-ingest unconditionally
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -967,6 +968,13 @@ func (x *IngestMarkdownRequest) GetContentHash() string {
 		return x.ContentHash
 	}
 	return ""
+}
+
+func (x *IngestMarkdownRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
 }
 
 type IngestMarkdownResponse struct {
@@ -1250,12 +1258,13 @@ const file_mykb_v1_kb_proto_rawDesc = "" +
 	"\tdocuments\x18\x01 \x03(\v2\x11.mykb.v1.DocumentR\tdocuments\"'\n" +
 	"\x15DeleteDocumentRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x18\n" +
-	"\x16DeleteDocumentResponse\"v\n" +
+	"\x16DeleteDocumentResponse\"\x8c\x01\n" +
 	"\x15IngestMarkdownRequest\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
 	"\x04body\x18\x03 \x01(\tR\x04body\x12!\n" +
-	"\fcontent_hash\x18\x04 \x01(\tR\vcontentHash\"l\n" +
+	"\fcontent_hash\x18\x04 \x01(\tR\vcontentHash\x12\x14\n" +
+	"\x05force\x18\x05 \x01(\bR\x05force\"l\n" +
 	"\x16IngestMarkdownResponse\x12\x1f\n" +
 	"\vdocument_id\x18\x01 \x01(\tR\n" +
 	"documentId\x12\x16\n" +

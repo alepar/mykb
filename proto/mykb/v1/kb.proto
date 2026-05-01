@@ -108,6 +108,7 @@ message IngestMarkdownRequest {
   string title = 2;        // optional; otherwise extracted by the server
   string body = 3;         // markdown including frontmatter
   string content_hash = 4; // sha256 of body, for idempotent re-ingest
+  bool force = 5;          // if true, skip content_hash idempotency and re-ingest unconditionally
 }
 
 message IngestMarkdownResponse {

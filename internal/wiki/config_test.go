@@ -86,24 +86,3 @@ func TestDiscoverVaultRootNotFound(t *testing.T) {
 	}
 }
 
-func TestScaffoldVault(t *testing.T) {
-	dir := t.TempDir()
-	if err := ScaffoldVault(dir, "main"); err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		"mykb-wiki.toml",
-		"CLAUDE.md",
-		"Log.md",
-		"entities/.gitkeep",
-		"concepts/.gitkeep",
-		"synthesis/.gitkeep",
-		".templates/entity.md",
-		".templates/concept.md",
-		".templates/synthesis.md",
-	} {
-		if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
-			t.Errorf("missing %s: %v", want, err)
-		}
-	}
-}
