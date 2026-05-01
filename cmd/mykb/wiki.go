@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	ioFs "io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -78,8 +79,131 @@ func runWikiInit(args []string) {
 }
 
 func runWikiSync(args []string) {
-	fmt.Fprintln(os.Stderr, "wiki sync: not yet implemented")
-	os.Exit(2)
+	fs := flag.NewFlagSet("wiki sync", flag.ExitOnError)
+	vaultOverride := fs.String("vault", "", "vault root (default: auto-discover)")
+	host := fs.String("host", "", "server address (default: from config)")
+	fs.Parse(args) //nolint:errcheck
+
+	vaultRoot, err := resolveVault(*vaultOverride)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	cfg, err := wiki.LoadVaultConfig(vaultRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
+	// Walk vault, computing content hashes.
+	type local struct {
+		relPath string
+		hash    string
+	}
+	var locals []local
+	err = filepath.WalkDir(vaultRoot, func(path string, d ioFs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != vaultRoot && (strings.HasPrefix(name, ".") || name == ".templates") {
+				return ioFs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		rel, _ := filepath.Rel(vaultRoot, path)
+		base := filepath.Base(rel)
+		if base == "Log.md" || base == "CLAUDE.md" {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		locals = append(locals, local{
+			relPath: filepath.ToSlash(rel),
+			hash:    pipelineComputeContentHash(string(body)),
+		})
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "walk vault: %v\n", err)
+		os.Exit(1)
+	}
+
+	// List remote.
+	clientCfg := cliconfig.Load("")
+	if *host != "" {
+		clientCfg.Host = *host
+	}
+	client := mykbv1connect.NewKBServiceClient(http.DefaultClient, clientCfg.Host)
+	listResp, err := client.ListWikiDocuments(context.Background(), connect.NewRequest(&mykbv1.ListWikiDocumentsRequest{WikiName: cfg.Name}))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "list wiki documents: %v\n", err)
+		os.Exit(1)
+	}
+	type remoteEntry struct {
+		id   string
+		hash string
+	}
+	remote := map[string]remoteEntry{}
+	for _, d := range listResp.Msg.GetDocuments() {
+		remote[d.GetUrl()] = remoteEntry{id: d.GetId(), hash: d.GetContentHash()}
+	}
+
+	// Three-way diff.
+	var added, changed, deleted int
+	seen := map[string]bool{}
+	for _, l := range locals {
+		url, _ := wiki.VaultPathToURL(cfg.Name, l.relPath)
+		seen[url] = true
+		body, err := os.ReadFile(filepath.Join(vaultRoot, l.relPath))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read %s: %v\n", l.relPath, err)
+			continue
+		}
+		existing, ok := remote[url]
+		switch {
+		case !ok:
+			if err := callIngest(client, url, string(body), l.hash); err != nil {
+				fmt.Fprintf(os.Stderr, "ingest %s: %v\n", url, err)
+				continue
+			}
+			added++
+		case existing.hash != l.hash:
+			if err := callIngest(client, url, string(body), l.hash); err != nil {
+				fmt.Fprintf(os.Stderr, "ingest %s: %v\n", url, err)
+				continue
+			}
+			changed++
+		}
+	}
+	for url, info := range remote {
+		if seen[url] {
+			continue
+		}
+		if _, err := client.DeleteDocument(context.Background(), connect.NewRequest(&mykbv1.DeleteDocumentRequest{Id: info.id})); err != nil {
+			fmt.Fprintf(os.Stderr, "delete %s: %v\n", url, err)
+			continue
+		}
+		deleted++
+	}
+
+	fmt.Printf("sync: +%d ~%d -%d (vault has %d files, remote had %d)\n",
+		added, changed, deleted, len(locals), len(remote))
+}
+
+func callIngest(client mykbv1connect.KBServiceClient, url, body, hash string) error {
+	_, err := client.IngestMarkdown(context.Background(), connect.NewRequest(&mykbv1.IngestMarkdownRequest{
+		Url:         url,
+		Body:        body,
+		ContentHash: hash,
+	}))
+	return err
 }
 
 func runWikiIngest(args []string) {
