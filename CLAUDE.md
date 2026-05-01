@@ -31,7 +31,7 @@ Proto regeneration requires `protoc-gen-go` and `protoc-gen-connect-go` in PATH 
 MyKB is a RAG knowledge base: ingest web pages, chunk them, embed with Voyage AI, store in multiple backends, and search with hybrid vector+FTS retrieval.
 
 **Two binaries:**
-- `cmd/mykb/` — CLI client (`mykb ingest <url>`, `mykb query <query>`). Deploys to client machines.
+- `cmd/mykb/` — CLI client. Subcommands: `ingest <url>`, `query <query>`, `wiki {init|sync|ingest|list|lint}`. Deploys to client machines.
 - `cmd/mykb-api/` — HTTP server (ConnectRPC). Runs in Docker alongside backends.
 
 **Ingestion pipeline** (`internal/pipeline/`): URL → Crawl4AI (markdown) → recursive chunker → Voyage AI embeddings → dual-index (Qdrant + Meilisearch). Orchestrated by `internal/worker/` which manages document lifecycle and retry.
@@ -69,6 +69,26 @@ MyKB is a RAG knowledge base: ingest web pages, chunk them, embed with Voyage AI
 | Meilisearch | `mykb` index | `chunk_id` | FTS on `content`, filterable by `document_id`, `chunk_id`, `chunk_index` |
 
 Requires `.env` file with `VOYAGE_API_KEY` and `MEILISEARCH_KEY`.
+
+## LLM-wiki
+
+mykb supports an Obsidian-style markdown wiki maintained by an LLM, with vault content ingested into the same hybrid search alongside raw web sources. Vault pages live as type-blind documents under synthetic URLs `wiki://<wiki-name>/<vault-relative-path>`. See `docs/superpowers/specs/2026-04-30-llm-wiki-on-mykb-design.md` for the full design.
+
+**CLI surface** (auto-discovers vault by walking up from cwd for `mykb-wiki.toml`):
+
+```bash
+mykb wiki init [--vault DIR] [--name NAME]   # scaffold a new vault
+mykb wiki sync [--vault DIR]                 # three-way diff: ingest new/changed, delete removed
+mykb wiki ingest <file> [--vault DIR]        # ingest a single file (idempotent on content_hash)
+mykb wiki list [--vault DIR]                 # filesystem-based vault inventory
+mykb wiki lint [--vault DIR]                 # validate frontmatter, wikilinks, orphans, stale
+```
+
+**Vault layout:** `entities/`, `concepts/`, `synthesis/`, plus `Log.md`, `CLAUDE.md`, `mykb-wiki.toml`, `.templates/`.
+
+**Wiki ingest pipeline** (`internal/pipeline/wiki_ingest.go`): bypasses Crawl4AI (body is already markdown) and the filesystem cache (vault file is source-of-truth). Strips YAML frontmatter before chunking, otherwise uses the standard chunk → embed → dual-index path. Two-phase commit on `content_hash`: the column is set only after the full pipeline succeeds, so partial failures self-heal on next sync.
+
+**Wiki name format:** `^[a-zA-Z0-9_-]+$` — validated at vault config load (`internal/wiki/config.go`) and at the proto boundary in the server.
 
 ## Data Preservation
 
