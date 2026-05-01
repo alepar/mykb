@@ -37,6 +37,8 @@ func main() {
 		runImportTabs(os.Args[2:])
 	case "import-urls":
 		runImportURLs(os.Args[2:])
+	case "wiki":
+		runWiki(os.Args[2:])
 	default:
 		// Default to query: "mykb <query>" is shorthand for "mykb query <query>"
 		runQuery(os.Args[1:])
@@ -50,6 +52,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  mykb ingest <url> [--quiet] [--force] [--host HOST]")
 	fmt.Fprintln(os.Stderr, "  mykb import-tabs [--urls-file FILE]")
 	fmt.Fprintln(os.Stderr, "  mykb import-urls --file FILE [--force] [--quiet] [--host HOST]")
+	fmt.Fprintln(os.Stderr, "  mykb wiki <subcommand> [args]   (init|sync|ingest|list|lint)")
 }
 
 // --- ingest command ---

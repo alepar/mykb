@@ -42,6 +42,9 @@ const selfTestHTML = `<html><head><title>MyKB Self Test</title></head><body>
 <p>If you can read this in query results, the full ingestion pipeline is working correctly.</p>
 </body></html>`
 
+const wikiSelfTestURL = "wiki://healthz/__deep_test__.md"
+const wikiSelfTestBody = "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# Healthz\n\nDeep health check wiki ingest.\n"
+
 func handleDeepHealth(
 	pg *storage.PostgresStore,
 	fs *storage.FilesystemStore,
@@ -49,6 +52,7 @@ func handleDeepHealth(
 	meili *storage.MeilisearchStore,
 	w *worker.Worker,
 	searcher *search.HybridSearcher,
+	wikiIngestor *pipeline.WikiIngestor,
 ) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
@@ -143,6 +147,37 @@ func handleDeepHealth(
 			return
 		}
 
+		// 3. Wiki ingest smoke pass.
+		wikiStart := time.Now()
+
+		// Clean up any leftover wiki test document from a previous run.
+		wikiExisting, _ := pg.GetDocumentByURL(ctx, wikiSelfTestURL)
+		if wikiExisting.ID != "" {
+			cleanupTestDoc(ctx, pg, qdrant, meili, fs, wikiExisting.ID)
+		}
+
+		// Defer cleanup of wiki test document regardless of outcome.
+		var wikiDocID string
+		defer func() {
+			if wikiDocID != "" {
+				cleanupTestDoc(context.Background(), pg, qdrant, meili, fs, wikiDocID)
+			}
+		}()
+
+		wikiHash := pipeline.ComputeContentHash(wikiSelfTestBody)
+		wikiResult, err := wikiIngestor.Ingest(ctx, wikiSelfTestURL, "Healthz", wikiSelfTestBody, wikiHash)
+		stages["wiki_ingest"] = time.Since(wikiStart).Round(time.Millisecond).String()
+		if err != nil {
+			respond("fail", fmt.Sprintf("wiki ingest: %v", err))
+			return
+		}
+		wikiDocID = wikiResult.DocumentID
+
+		if wikiResult.Chunks < 1 {
+			respond("fail", "wiki ingest: no chunks produced")
+			return
+		}
+
 		respond("pass", "")
 	}
 }
@@ -211,8 +246,11 @@ func main() {
 	w := worker.NewWorker(pg, fs, crawler, embedder, indexer, cfg, workerID)
 	go w.Start(ctx)
 
+	// Wiki ingestor for synchronous wiki document ingestion
+	wikiIngestor := pipeline.NewWikiIngestor(pg, embedder, indexer)
+
 	// HTTP server with Connect handler + REST API
-	srv := server.NewServer(pg, fs, qdrant, meili, searcher, w, cfg)
+	srv := server.NewServer(pg, fs, qdrant, meili, searcher, w, cfg, wikiIngestor)
 
 	mux := http.NewServeMux()
 
@@ -231,7 +269,7 @@ func main() {
 	})
 
 	// Deep health check — full pipeline smoke test
-	mux.HandleFunc("GET /healthz/deep", handleDeepHealth(pg, fs, qdrant, meili, w, searcher))
+	mux.HandleFunc("GET /healthz/deep", handleDeepHealth(pg, fs, qdrant, meili, w, searcher, wikiIngestor))
 
 	httpServer := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,

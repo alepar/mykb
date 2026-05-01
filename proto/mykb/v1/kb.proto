@@ -9,6 +9,10 @@ service KBService {
   rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse);
   rpc GetDocuments(GetDocumentsRequest) returns (GetDocumentsResponse);
   rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
+  // Wiki ingest (synchronous; bypasses crawler since the body is already markdown).
+  rpc IngestMarkdown(IngestMarkdownRequest) returns (IngestMarkdownResponse);
+  // List documents belonging to a given wiki, returning URL + content_hash + id for sync diffing.
+  rpc ListWikiDocuments(ListWikiDocumentsRequest) returns (ListWikiDocumentsResponse);
 }
 
 message IngestURLRequest {
@@ -98,3 +102,30 @@ message DeleteDocumentRequest {
 }
 
 message DeleteDocumentResponse {}
+
+message IngestMarkdownRequest {
+  string url = 1;          // synthetic, e.g. wiki://main/concepts/foo.md
+  string title = 2;        // optional; otherwise extracted by the server
+  string body = 3;         // markdown including frontmatter
+  string content_hash = 4; // sha256 of body, for idempotent re-ingest
+}
+
+message IngestMarkdownResponse {
+  string document_id = 1;
+  int32 chunks = 2;
+  bool was_noop = 3;       // true if content_hash matched the existing doc and we skipped
+}
+
+message ListWikiDocumentsRequest {
+  string wiki_name = 1;
+}
+
+message ListWikiDocumentsResponse {
+  repeated WikiDocument documents = 1;
+}
+
+message WikiDocument {
+  string id = 1;
+  string url = 2;
+  string content_hash = 3;
+}

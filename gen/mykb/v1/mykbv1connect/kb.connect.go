@@ -46,6 +46,12 @@ const (
 	// KBServiceDeleteDocumentProcedure is the fully-qualified name of the KBService's DeleteDocument
 	// RPC.
 	KBServiceDeleteDocumentProcedure = "/mykb.v1.KBService/DeleteDocument"
+	// KBServiceIngestMarkdownProcedure is the fully-qualified name of the KBService's IngestMarkdown
+	// RPC.
+	KBServiceIngestMarkdownProcedure = "/mykb.v1.KBService/IngestMarkdown"
+	// KBServiceListWikiDocumentsProcedure is the fully-qualified name of the KBService's
+	// ListWikiDocuments RPC.
+	KBServiceListWikiDocumentsProcedure = "/mykb.v1.KBService/ListWikiDocuments"
 )
 
 // KBServiceClient is a client for the mykb.v1.KBService service.
@@ -56,6 +62,10 @@ type KBServiceClient interface {
 	ListDocuments(context.Context, *connect.Request[v1.ListDocumentsRequest]) (*connect.Response[v1.ListDocumentsResponse], error)
 	GetDocuments(context.Context, *connect.Request[v1.GetDocumentsRequest]) (*connect.Response[v1.GetDocumentsResponse], error)
 	DeleteDocument(context.Context, *connect.Request[v1.DeleteDocumentRequest]) (*connect.Response[v1.DeleteDocumentResponse], error)
+	// Wiki ingest (synchronous; bypasses crawler since the body is already markdown).
+	IngestMarkdown(context.Context, *connect.Request[v1.IngestMarkdownRequest]) (*connect.Response[v1.IngestMarkdownResponse], error)
+	// List documents belonging to a given wiki, returning URL + content_hash + id for sync diffing.
+	ListWikiDocuments(context.Context, *connect.Request[v1.ListWikiDocumentsRequest]) (*connect.Response[v1.ListWikiDocumentsResponse], error)
 }
 
 // NewKBServiceClient constructs a client for the mykb.v1.KBService service. By default, it uses the
@@ -105,17 +115,31 @@ func NewKBServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...c
 			connect.WithSchema(kBServiceMethods.ByName("DeleteDocument")),
 			connect.WithClientOptions(opts...),
 		),
+		ingestMarkdown: connect.NewClient[v1.IngestMarkdownRequest, v1.IngestMarkdownResponse](
+			httpClient,
+			baseURL+KBServiceIngestMarkdownProcedure,
+			connect.WithSchema(kBServiceMethods.ByName("IngestMarkdown")),
+			connect.WithClientOptions(opts...),
+		),
+		listWikiDocuments: connect.NewClient[v1.ListWikiDocumentsRequest, v1.ListWikiDocumentsResponse](
+			httpClient,
+			baseURL+KBServiceListWikiDocumentsProcedure,
+			connect.WithSchema(kBServiceMethods.ByName("ListWikiDocuments")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // kBServiceClient implements KBServiceClient.
 type kBServiceClient struct {
-	ingestURL      *connect.Client[v1.IngestURLRequest, v1.IngestProgress]
-	ingestURLs     *connect.Client[v1.IngestURLsRequest, v1.IngestURLsProgress]
-	query          *connect.Client[v1.QueryRequest, v1.QueryResponse]
-	listDocuments  *connect.Client[v1.ListDocumentsRequest, v1.ListDocumentsResponse]
-	getDocuments   *connect.Client[v1.GetDocumentsRequest, v1.GetDocumentsResponse]
-	deleteDocument *connect.Client[v1.DeleteDocumentRequest, v1.DeleteDocumentResponse]
+	ingestURL         *connect.Client[v1.IngestURLRequest, v1.IngestProgress]
+	ingestURLs        *connect.Client[v1.IngestURLsRequest, v1.IngestURLsProgress]
+	query             *connect.Client[v1.QueryRequest, v1.QueryResponse]
+	listDocuments     *connect.Client[v1.ListDocumentsRequest, v1.ListDocumentsResponse]
+	getDocuments      *connect.Client[v1.GetDocumentsRequest, v1.GetDocumentsResponse]
+	deleteDocument    *connect.Client[v1.DeleteDocumentRequest, v1.DeleteDocumentResponse]
+	ingestMarkdown    *connect.Client[v1.IngestMarkdownRequest, v1.IngestMarkdownResponse]
+	listWikiDocuments *connect.Client[v1.ListWikiDocumentsRequest, v1.ListWikiDocumentsResponse]
 }
 
 // IngestURL calls mykb.v1.KBService.IngestURL.
@@ -148,6 +172,16 @@ func (c *kBServiceClient) DeleteDocument(ctx context.Context, req *connect.Reque
 	return c.deleteDocument.CallUnary(ctx, req)
 }
 
+// IngestMarkdown calls mykb.v1.KBService.IngestMarkdown.
+func (c *kBServiceClient) IngestMarkdown(ctx context.Context, req *connect.Request[v1.IngestMarkdownRequest]) (*connect.Response[v1.IngestMarkdownResponse], error) {
+	return c.ingestMarkdown.CallUnary(ctx, req)
+}
+
+// ListWikiDocuments calls mykb.v1.KBService.ListWikiDocuments.
+func (c *kBServiceClient) ListWikiDocuments(ctx context.Context, req *connect.Request[v1.ListWikiDocumentsRequest]) (*connect.Response[v1.ListWikiDocumentsResponse], error) {
+	return c.listWikiDocuments.CallUnary(ctx, req)
+}
+
 // KBServiceHandler is an implementation of the mykb.v1.KBService service.
 type KBServiceHandler interface {
 	IngestURL(context.Context, *connect.Request[v1.IngestURLRequest], *connect.ServerStream[v1.IngestProgress]) error
@@ -156,6 +190,10 @@ type KBServiceHandler interface {
 	ListDocuments(context.Context, *connect.Request[v1.ListDocumentsRequest]) (*connect.Response[v1.ListDocumentsResponse], error)
 	GetDocuments(context.Context, *connect.Request[v1.GetDocumentsRequest]) (*connect.Response[v1.GetDocumentsResponse], error)
 	DeleteDocument(context.Context, *connect.Request[v1.DeleteDocumentRequest]) (*connect.Response[v1.DeleteDocumentResponse], error)
+	// Wiki ingest (synchronous; bypasses crawler since the body is already markdown).
+	IngestMarkdown(context.Context, *connect.Request[v1.IngestMarkdownRequest]) (*connect.Response[v1.IngestMarkdownResponse], error)
+	// List documents belonging to a given wiki, returning URL + content_hash + id for sync diffing.
+	ListWikiDocuments(context.Context, *connect.Request[v1.ListWikiDocumentsRequest]) (*connect.Response[v1.ListWikiDocumentsResponse], error)
 }
 
 // NewKBServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -201,6 +239,18 @@ func NewKBServiceHandler(svc KBServiceHandler, opts ...connect.HandlerOption) (s
 		connect.WithSchema(kBServiceMethods.ByName("DeleteDocument")),
 		connect.WithHandlerOptions(opts...),
 	)
+	kBServiceIngestMarkdownHandler := connect.NewUnaryHandler(
+		KBServiceIngestMarkdownProcedure,
+		svc.IngestMarkdown,
+		connect.WithSchema(kBServiceMethods.ByName("IngestMarkdown")),
+		connect.WithHandlerOptions(opts...),
+	)
+	kBServiceListWikiDocumentsHandler := connect.NewUnaryHandler(
+		KBServiceListWikiDocumentsProcedure,
+		svc.ListWikiDocuments,
+		connect.WithSchema(kBServiceMethods.ByName("ListWikiDocuments")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/mykb.v1.KBService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case KBServiceIngestURLProcedure:
@@ -215,6 +265,10 @@ func NewKBServiceHandler(svc KBServiceHandler, opts ...connect.HandlerOption) (s
 			kBServiceGetDocumentsHandler.ServeHTTP(w, r)
 		case KBServiceDeleteDocumentProcedure:
 			kBServiceDeleteDocumentHandler.ServeHTTP(w, r)
+		case KBServiceIngestMarkdownProcedure:
+			kBServiceIngestMarkdownHandler.ServeHTTP(w, r)
+		case KBServiceListWikiDocumentsProcedure:
+			kBServiceListWikiDocumentsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -246,4 +300,12 @@ func (UnimplementedKBServiceHandler) GetDocuments(context.Context, *connect.Requ
 
 func (UnimplementedKBServiceHandler) DeleteDocument(context.Context, *connect.Request[v1.DeleteDocumentRequest]) (*connect.Response[v1.DeleteDocumentResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("mykb.v1.KBService.DeleteDocument is not implemented"))
+}
+
+func (UnimplementedKBServiceHandler) IngestMarkdown(context.Context, *connect.Request[v1.IngestMarkdownRequest]) (*connect.Response[v1.IngestMarkdownResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("mykb.v1.KBService.IngestMarkdown is not implemented"))
+}
+
+func (UnimplementedKBServiceHandler) ListWikiDocuments(context.Context, *connect.Request[v1.ListWikiDocumentsRequest]) (*connect.Response[v1.ListWikiDocumentsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("mykb.v1.KBService.ListWikiDocuments is not implemented"))
 }
