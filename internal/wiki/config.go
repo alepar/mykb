@@ -4,9 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/pelletier/go-toml/v2"
 )
+
+// wikiNameRegexp is the canonical format for wiki/vault names. Matches the
+// server-side validation regex in the RPC handlers.
+var wikiNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // VaultConfigFilename is the well-known config file at the vault root.
 const VaultConfigFilename = "mykb-wiki.toml"
@@ -26,6 +31,9 @@ func ParseVaultConfig(data []byte) (VaultConfig, error) {
 	}
 	if cfg.Name == "" {
 		return VaultConfig{}, fmt.Errorf("vault config missing required field: name")
+	}
+	if !wikiNameRegexp.MatchString(cfg.Name) {
+		return VaultConfig{}, fmt.Errorf("vault config name %q is invalid (must match [a-zA-Z0-9_-]+)", cfg.Name)
 	}
 	if cfg.StaleAfterDays == 0 {
 		cfg.StaleAfterDays = 180

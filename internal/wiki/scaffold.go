@@ -18,6 +18,9 @@ func ScaffoldVault(dir, wikiName string) error {
 	if wikiName == "" {
 		return fmt.Errorf("wiki name is empty")
 	}
+	if !wikiNameRegexp.MatchString(wikiName) {
+		return fmt.Errorf("wiki name %q is invalid (must match [a-zA-Z0-9_-]+)", wikiName)
+	}
 
 	files := map[string]string{
 		"mykb-wiki.toml":          fmt.Sprintf("name = %q\nstale_after_days = 180\n", wikiName),

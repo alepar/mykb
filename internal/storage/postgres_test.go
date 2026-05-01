@@ -615,6 +615,30 @@ func TestListWikiDocuments(t *testing.T) {
 	}
 }
 
+func TestListWikiDocumentsLikeWildcardSafety(t *testing.T) {
+	pg := newTestStore(t)
+	ctx := context.Background()
+
+	// Two wikis whose names differ by a character that's a LIKE wildcard.
+	if _, err := pg.UpsertWikiDocument(ctx, "wiki://my_wiki/foo.md", "Foo", "h1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pg.UpsertWikiDocument(ctx, "wiki://myXwiki/bar.md", "Bar", "h2"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := pg.ListWikiDocuments(ctx, "my_wiki")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 doc for my_wiki, got %d: %+v", len(got), got)
+	}
+	if got[0].URL != "wiki://my_wiki/foo.md" {
+		t.Errorf("got %q want wiki://my_wiki/foo.md", got[0].URL)
+	}
+}
+
 func TestUpsertWikiDocumentIdempotent(t *testing.T) {
 	pg := newTestStore(t)
 	ctx := context.Background()
@@ -631,10 +655,13 @@ func TestUpsertWikiDocumentIdempotent(t *testing.T) {
 	if doc1.ID != doc2.ID {
 		t.Errorf("expected same ID on upsert, got %s then %s", doc1.ID, doc2.ID)
 	}
-	if doc2.ContentHash != "hash-v2" {
-		t.Errorf("expected updated hash, got %q", doc2.ContentHash)
-	}
 	if doc2.Title == nil || *doc2.Title != "Foo Updated" {
-		t.Errorf("expected updated title, got %v", doc2.Title)
+		t.Errorf("expected title 'Foo Updated', got %v", doc2.Title)
+	}
+	// content_hash is intentionally NOT updated on conflict; SetContentHash is the
+	// authoritative final write at the end of the wiki ingest pipeline. The first
+	// upsert set it to "hash-v1"; the second upsert leaves it as-is.
+	if doc2.ContentHash != "hash-v1" {
+		t.Errorf("content_hash should remain hash-v1 after second upsert; got %q", doc2.ContentHash)
 	}
 }

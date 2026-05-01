@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -581,14 +582,16 @@ func (s *PostgresStore) SetContentHash(ctx context.Context, documentID, hash str
 
 // UpsertWikiDocument inserts or updates a wiki document by URL. Used by the
 // wiki ingest path. The unique constraint on documents.url ensures one row
-// per URL; on conflict, title and content_hash are updated.
+// per URL; on conflict, only title is updated. content_hash is intentionally
+// excluded from the conflict update: SetContentHash is the authoritative final
+// write at the end of the wiki ingest pipeline, and overwriting it here could
+// race with a concurrent successful ingest and clear a valid hash.
 func (s *PostgresStore) UpsertWikiDocument(ctx context.Context, url, title, contentHash string) (Document, error) {
 	const q = `
 		INSERT INTO documents (url, title, content_hash, step, state)
 		VALUES ($1, $2, $3, 'DONE', 'COMPLETED')
 		ON CONFLICT (url) DO UPDATE SET
 			title = EXCLUDED.title,
-			content_hash = EXCLUDED.content_hash,
 			updated_at = now()
 		RETURNING ` + documentColumns
 	d, err := scanDocument(s.pool.QueryRow(ctx, q, url, title, contentHash))
@@ -602,13 +605,20 @@ func (s *PostgresStore) UpsertWikiDocument(ctx context.Context, url, title, cont
 // by their "wiki://<wikiName>/" URL prefix. Used by `mykb wiki sync` to
 // compute the three-way diff.
 func (s *PostgresStore) ListWikiDocuments(ctx context.Context, wikiName string) ([]Document, error) {
-	prefix := "wiki://" + wikiName + "/"
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, url, COALESCE(title, ''), COALESCE(content_hash, '')
-		 FROM documents
-		 WHERE url LIKE $1
-		 ORDER BY url`,
-		prefix+"%")
+	// Defense-in-depth: server-side regex validation prevents % and _ in well-behaved
+	// callers, but storage methods should be self-protective. Escape LIKE metacharacters
+	// so unusual wiki names don't accidentally match across wikis.
+	escaped := strings.ReplaceAll(wikiName, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `%`, `\%`)
+	escaped = strings.ReplaceAll(escaped, `_`, `\_`)
+	prefix := "wiki://" + escaped + "/"
+	const q = `
+		SELECT id, url, COALESCE(title, ''), COALESCE(content_hash, '')
+		FROM documents
+		WHERE url LIKE $1 ESCAPE '\'
+		ORDER BY url
+	`
+	rows, err := s.pool.Query(ctx, q, prefix+"%")
 	if err != nil {
 		return nil, fmt.Errorf("list wiki documents: %w", err)
 	}

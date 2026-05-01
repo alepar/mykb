@@ -40,6 +40,22 @@ func TestParseVaultConfigRequiresName(t *testing.T) {
 	}
 }
 
+func TestParseVaultConfigRejectsBadName(t *testing.T) {
+	tests := []string{
+		`name = "has space"`,
+		`name = "has%percent"`,
+		`name = "has/slash"`,
+		`name = "has.dot"`,
+	}
+	for _, in := range tests {
+		t.Run(in, func(t *testing.T) {
+			if _, err := ParseVaultConfig([]byte(in)); err == nil {
+				t.Errorf("expected error for %q", in)
+			}
+		})
+	}
+}
+
 func TestDiscoverVaultRoot(t *testing.T) {
 	tmp := t.TempDir()
 	vault := filepath.Join(tmp, "myvault")
