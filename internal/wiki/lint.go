@@ -208,6 +208,17 @@ func validateFrontmatter(p vaultPage) []string {
 	return errs
 }
 
+// normalizeWikilinkKey produces the canonical lookup key for a wikilink
+// target or a vault page name. It matches Obsidian's documented rules:
+// case-insensitive, treating space/hyphen/underscore as equivalent,
+// collapsing whitespace runs, and trimming ends. Path separators (`/`)
+// are preserved so future path-prefixed wikilinks can disambiguate.
+func normalizeWikilinkKey(s string) string {
+	s = strings.ToLower(s)
+	s = strings.NewReplacer("_", " ", "-", " ").Replace(s)
+	return strings.Join(strings.Fields(s), " ")
+}
+
 func stemOf(relPath string) string {
 	base := filepath.Base(relPath)
 	return strings.TrimSuffix(base, ".md")

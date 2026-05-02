@@ -99,3 +99,28 @@ func containsWarn(r LintReport, path, msg string) bool {
 	}
 	return false
 }
+
+func TestNormalizeWikilinkKey(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"DIY string alignment procedure", "diy string alignment procedure"},
+		{"diy-string-alignment-procedure", "diy string alignment procedure"},
+		{"diy_string_alignment_procedure", "diy string alignment procedure"},
+		{"Foo Bar", "foo bar"},
+		{"foo-bar", "foo bar"},
+		{"foo_bar", "foo bar"},
+		{"Multi   Space", "multi space"},
+		{"  trim-me  ", "trim me"},
+		{"mixed_-_separators", "mixed separators"},
+		{"", ""},
+		{"already lowercase", "already lowercase"},
+		{"path/keeps/slash", "path/keeps/slash"},
+	}
+	for _, tc := range cases {
+		got := normalizeWikilinkKey(tc.in)
+		if got != tc.want {
+			t.Errorf("normalizeWikilinkKey(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
