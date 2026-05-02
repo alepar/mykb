@@ -100,6 +100,74 @@ func containsWarn(r LintReport, path, msg string) bool {
 	return false
 }
 
+func TestLintWikilinkResolutionCaseInsensitive(t *testing.T) {
+	v := writeFixture(t, map[string]string{
+		"mykb-wiki.toml": `name = "main"`,
+		"concepts/diy-string-alignment-procedure.md": "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# DIY string alignment procedure\n",
+		"concepts/caller.md": "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# Caller\nSee [[DIY string alignment procedure]].",
+	})
+	report, err := Lint(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range report.Errors {
+		if strings.Contains(e.Path, "caller.md") && strings.Contains(e.Message, "broken wikilink") {
+			t.Errorf("did not expect broken-wikilink error, got: %+v", e)
+		}
+	}
+}
+
+func TestLintWikilinkResolutionSeparatorEquivalence(t *testing.T) {
+	v := writeFixture(t, map[string]string{
+		"mykb-wiki.toml": `name = "main"`,
+		"concepts/foo-bar.md": "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# Foo Bar\n",
+		"concepts/a.md": "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# A\nSee [[foo_bar]] and [[Foo Bar]] and [[foo-bar]].",
+	})
+	report, err := Lint(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range report.Errors {
+		if strings.Contains(e.Path, "a.md") && strings.Contains(e.Message, "broken wikilink") {
+			t.Errorf("did not expect broken-wikilink error, got: %+v", e)
+		}
+	}
+}
+
+func TestLintWikilinkResolutionWhitespaceCollapse(t *testing.T) {
+	v := writeFixture(t, map[string]string{
+		"mykb-wiki.toml": `name = "main"`,
+		"concepts/multi-space.md": "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# Multi space\n",
+		"concepts/a.md": "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# A\nSee [[Multi   Space]].",
+	})
+	report, err := Lint(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range report.Errors {
+		if strings.Contains(e.Path, "a.md") && strings.Contains(e.Message, "broken wikilink") {
+			t.Errorf("did not expect broken-wikilink error, got: %+v", e)
+		}
+	}
+}
+
+func TestLintWikilinkResolutionAliasNormalized(t *testing.T) {
+	v := writeFixture(t, map[string]string{
+		"mykb-wiki.toml": `name = "main"`,
+		"entities/widget.md": "---\ntype: entity\nkind: tool\ndate_updated: 2026-04-30\naliases:\n  - The Widget System\n---\n# Widget\n",
+		"concepts/a.md": "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# A\nSee [[the-widget-system]] and [[the_widget_system]].",
+	})
+	report, err := Lint(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range report.Errors {
+		if strings.Contains(e.Path, "a.md") && strings.Contains(e.Message, "broken wikilink") {
+			t.Errorf("did not expect broken-wikilink error, got: %+v", e)
+		}
+	}
+}
+
 func TestNormalizeWikilinkKey(t *testing.T) {
 	cases := []struct {
 		in, want string

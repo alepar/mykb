@@ -37,13 +37,14 @@ func Lint(vaultRoot string) (LintReport, error) {
 	var report LintReport
 
 	// Build name -> page map for short-form wikilink resolution.
+	// Keys are normalized (Obsidian-style: case-insensitive, space/-/_ equivalent).
 	byName := map[string]*vaultPage{}
 	for i, p := range pages {
-		stem := stemOf(p.relPath)
-		byName[stem] = &pages[i]
+		key := normalizeWikilinkKey(stemOf(p.relPath))
+		byName[key] = &pages[i]
 		// Also register frontmatter aliases (entities only).
 		for _, a := range p.aliases {
-			byName[a] = &pages[i]
+			byName[normalizeWikilinkKey(a)] = &pages[i]
 		}
 	}
 
@@ -76,7 +77,7 @@ func Lint(vaultRoot string) (LintReport, error) {
 				continue
 			}
 			// Short form: resolve by stem or alias.
-			resolved, ok := byName[target]
+			resolved, ok := byName[normalizeWikilinkKey(target)]
 			if !ok {
 				report.Errors = append(report.Errors, LintFinding{
 					Path:    p.relPath,
