@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -38,14 +39,46 @@ func Lint(vaultRoot string) (LintReport, error) {
 
 	// Build name -> page map for short-form wikilink resolution.
 	// Keys are normalized (Obsidian-style: case-insensitive, space/-/_ equivalent).
+	// When two distinct pages share a normalized key, emit one ambiguity warning
+	// per colliding key and keep the first-registered page as the resolution.
 	byName := map[string]*vaultPage{}
-	for i, p := range pages {
-		key := normalizeWikilinkKey(stemOf(p.relPath))
-		byName[key] = &pages[i]
-		// Also register frontmatter aliases (entities only).
-		for _, a := range p.aliases {
-			byName[normalizeWikilinkKey(a)] = &pages[i]
+	type collision struct {
+		key, pathA, pathB string
+	}
+	var collisions []collision
+	register := func(key string, page *vaultPage) {
+		existing, ok := byName[key]
+		if !ok {
+			byName[key] = page
+			return
 		}
+		if existing == page {
+			return // same page, alias dedup
+		}
+		a, b := existing.relPath, page.relPath
+		if b < a {
+			a, b = b, a
+		}
+		collisions = append(collisions, collision{key: key, pathA: a, pathB: b})
+	}
+	for i := range pages {
+		p := &pages[i]
+		register(normalizeWikilinkKey(stemOf(p.relPath)), p)
+		for _, a := range p.aliases {
+			register(normalizeWikilinkKey(a), p)
+		}
+	}
+	sort.SliceStable(collisions, func(i, j int) bool { return collisions[i].key < collisions[j].key })
+	seenColl := map[string]bool{}
+	for _, c := range collisions {
+		if seenColl[c.key] {
+			continue
+		}
+		seenColl[c.key] = true
+		report.Warnings = append(report.Warnings, LintFinding{
+			Path:    c.pathA,
+			Message: fmt.Sprintf("ambiguous wikilink target %q resolves to both %s and %s", c.key, c.pathA, c.pathB),
+		})
 	}
 
 	now := time.Now()

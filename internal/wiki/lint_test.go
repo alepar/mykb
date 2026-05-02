@@ -168,6 +168,80 @@ func TestLintWikilinkResolutionAliasNormalized(t *testing.T) {
 	}
 }
 
+func TestLintWikilinkAmbiguityWarning(t *testing.T) {
+	v := writeFixture(t, map[string]string{
+		"mykb-wiki.toml": `name = "main"`,
+		"concepts/foo-bar.md": "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# Foo Bar\n",
+		"concepts/foo_bar.md": "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# Foo Bar (other)\n",
+		"concepts/caller.md":  "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# Caller\nSee [[foo bar]].",
+	})
+	report, err := Lint(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSubstr := `"foo bar" resolves to both concepts/foo-bar.md and concepts/foo_bar.md`
+	count := 0
+	var matched LintFinding
+	for _, w := range report.Warnings {
+		if strings.Contains(w.Message, "ambiguous wikilink target") && strings.Contains(w.Message, "foo bar") {
+			count++
+			matched = w
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 ambiguity warning for key, got %d. Warnings: %+v", count, report.Warnings)
+	}
+	if !strings.Contains(matched.Message, wantSubstr) {
+		t.Errorf("warning message missing expected substring %q.\ngot: %q", wantSubstr, matched.Message)
+	}
+}
+
+func TestLintWikilinkAmbiguityDeterministicMultiWayCollision(t *testing.T) {
+	// Three pages whose stems all normalize to "foo bar".
+	v := writeFixture(t, map[string]string{
+		"mykb-wiki.toml":      `name = "main"`,
+		"concepts/foo-bar.md": "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# A\n",
+		"concepts/foo_bar.md": "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# B\n",
+		"concepts/Foo Bar.md": "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# C\n",
+		"concepts/caller.md":  "---\ntype: concept\ndate_updated: 2026-04-30\n---\n# Caller\nSee [[foo bar]].",
+	})
+	first, err := Lint(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		next, err := Lint(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !sameAmbiguityWarnings(first, next) {
+			t.Fatalf("ambiguity warnings differ across runs.\nrun 0: %+v\nrun %d: %+v", first.Warnings, i+1, next.Warnings)
+		}
+	}
+}
+
+func sameAmbiguityWarnings(a, b LintReport) bool {
+	collect := func(r LintReport) []string {
+		var out []string
+		for _, w := range r.Warnings {
+			if strings.Contains(w.Message, "ambiguous wikilink target") {
+				out = append(out, w.Path+"::"+w.Message)
+			}
+		}
+		return out
+	}
+	x, y := collect(a), collect(b)
+	if len(x) != len(y) {
+		return false
+	}
+	for i := range x {
+		if x[i] != y[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestNormalizeWikilinkKey(t *testing.T) {
 	cases := []struct {
 		in, want string
