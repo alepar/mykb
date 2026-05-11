@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	flag "github.com/spf13/pflag"
 	"golang.org/x/term"
 
 	mykbv1 "mykb/gen/mykb/v1"
@@ -432,11 +432,10 @@ func loadURLSet(path string) map[string]bool {
 
 func runImportURLs(args []string) {
 	fs := flag.NewFlagSet("import-urls", flag.ExitOnError)
-	file := fs.String("file", "", "path to URL file (one URL per line)")
+	file := fs.StringP("file", "f", "", "path to URL file (one URL per line)")
 	force := fs.Bool("force", false, "re-ingest even if URL already exists")
 	quiet := fs.Bool("quiet", false, "suppress progress output")
 	host := fs.String("host", "", "server address (default: from config)")
-	fs.StringVar(file, "f", "", "path to URL file (short for --file)")
 	fs.Parse(args)
 
 	if *file == "" {

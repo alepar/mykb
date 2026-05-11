@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"flag"
 	"fmt"
 	ioFs "io/fs"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
+	flag "github.com/spf13/pflag"
 
 	mykbv1 "mykb/gen/mykb/v1"
 	"mykb/gen/mykb/v1/mykbv1connect"
