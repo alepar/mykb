@@ -8,10 +8,25 @@ import (
 	"github.com/austinfhunter/voyageai"
 )
 
+// rerankBackend is the narrow surface we use from the Voyage SDK. Tests
+// substitute fakes; production wires the real client via voyageBackend.
+type rerankBackend interface {
+	Rerank(query string, documents []string, model string, opts *voyageai.RerankRequestOpts) (*voyageai.RerankResponse, error)
+}
+
+// voyageBackend adapts *voyageai.VoyageClient to rerankBackend.
+type voyageBackend struct {
+	client *voyageai.VoyageClient
+}
+
+func (v *voyageBackend) Rerank(query string, documents []string, model string, opts *voyageai.RerankRequestOpts) (*voyageai.RerankResponse, error) {
+	return v.client.Rerank(query, documents, model, opts)
+}
+
 // Reranker re-scores documents against a query using the Voyage AI rerank API.
 type Reranker struct {
-	client *voyageai.VoyageClient
-	model  string
+	backend rerankBackend
+	model   string
 }
 
 // RerankResult holds the original index of a document in the input slice
@@ -29,8 +44,8 @@ func NewReranker(apiKey, model string) *Reranker {
 	}
 	client := voyageai.NewClient(&voyageai.VoyageClientOpts{Key: apiKey})
 	return &Reranker{
-		client: client,
-		model:  model,
+		backend: &voyageBackend{client: client},
+		model:   model,
 	}
 }
 
@@ -48,7 +63,7 @@ func (r *Reranker) Rerank(ctx context.Context, query string, documents []string,
 		tk = &topK
 	}
 
-	resp, err := r.client.Rerank(query, documents, r.model, &voyageai.RerankRequestOpts{
+	resp, err := r.backend.Rerank(query, documents, r.model, &voyageai.RerankRequestOpts{
 		TopK: tk,
 	})
 	if err != nil {
@@ -63,8 +78,6 @@ func (r *Reranker) Rerank(ctx context.Context, query string, documents []string,
 		}
 	}
 
-	// The API should already return sorted results when TopK is set, but we
-	// sort explicitly to guarantee the contract.
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Score > results[j].Score
 	})

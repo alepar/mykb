@@ -47,8 +47,8 @@ func TestNewRerankerDefaults(t *testing.T) {
 	if r.model != "rerank-2" {
 		t.Fatalf("expected default model rerank-2, got %s", r.model)
 	}
-	if r.client == nil {
-		t.Fatal("client should not be nil")
+	if r.backend == nil {
+		t.Fatal("backend should not be nil")
 	}
 }
 
