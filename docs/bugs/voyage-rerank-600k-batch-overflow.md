@@ -105,7 +105,15 @@ Both succeed. Server log line:
 voyage rerank: split 1000 candidates into 2 sub-batches (query=12 tokens, total docs=802188 tokens)
 ```
 
-The depth=1-still-752k-tokens reproduction remains unexplained by static
-inspection of the current code, but the defensive sub-batching makes it
-moot — the batch is always split if it would overflow regardless of the
-candidate count.
+The depth=1-still-752k-tokens reproduction was traced to a separate CLI
+bug: Go's stdlib `flag` package stops parsing at the first non-flag
+argument. `mykb query "Bazzite" --rerank-depth 1 ...` silently ignored
+every flag, so the CLI used its default `RerankDepth = 1000`. Smoking
+gun: a query of just "Bazzite" produced a server-side `query=33 tokens`
+log line — those 33 tokens were the flag text being folded into the
+query string by `strings.Join(fs.Args(), " ")`.
+
+Fixed in commit `70134f2` by switching `cmd/mykb` to `spf13/pflag`
+(POSIX-style interspersed parsing, near drop-in since the CLI already
+used double-dash everywhere). After the fix, the same query logs
+`query=3 tokens` and the user's `--rerank-depth 1` is respected.
