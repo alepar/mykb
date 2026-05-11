@@ -77,3 +77,35 @@ prior pages, then proceed straight to deep-research.
 
 Filed by the wiki-research run for "Linux OS for ML homelab" research on
 2026-05-10 after the rerank failure prevented mykb-first retrieval.
+
+## Resolution
+
+Fixed in commit `5a2b0e1` (2026-05-10). Design and plan:
+
+- `docs/superpowers/specs/2026-05-10-voyage-rerank-batch-budget-design.md`
+- `docs/superpowers/plans/2026-05-10-voyage-rerank-batch-budget.md`
+
+`internal/search/rerank.go` now bin-packs the candidate slice into
+sub-batches under a 550k-token budget (Voyage's formula
+`query_tokens × N + sum(clamped_doc_tokens)`, 8% headroom under 600k),
+dispatches them in parallel via `errgroup`, and merges by score. Cross-
+encoder scores are comparable across calls, so the merged top-K matches
+a single-call ranking.
+
+Verified against the production deployment on 2026-05-10:
+
+```
+mykb query "Bazzite immutable Linux NVIDIA" --no-merge
+mykb query "Bazzite immutable Linux NVIDIA" --no-merge --rerank-depth 1000
+```
+
+Both succeed. Server log line:
+
+```
+voyage rerank: split 1000 candidates into 2 sub-batches (query=12 tokens, total docs=802188 tokens)
+```
+
+The depth=1-still-752k-tokens reproduction remains unexplained by static
+inspection of the current code, but the defensive sub-batching makes it
+moot — the batch is always split if it would overflow regardless of the
+candidate count.
