@@ -28,11 +28,11 @@ func getBPE() tokenizer.Codec {
 	return bpeCodec
 }
 
-// countTokens returns an estimated token count for a string using the
+// CountTokens returns an estimated token count for a string using the
 // cl100k_base BPE tokenizer with a 1.2x multiplier to approximate
 // Voyage AI's Qwen2 tokenizer. Falls back to len/4 if the tokenizer
 // fails to load.
-func countTokens(s string) int {
+func CountTokens(s string) int {
 	codec := getBPE()
 	if codec == nil {
 		return len(s) / 4
