@@ -3,9 +3,14 @@ package search
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
+	"sync"
 
 	"github.com/austinfhunter/voyageai"
+	"golang.org/x/sync/errgroup"
+
+	"mykb/internal/pipeline"
 )
 
 // rerankBackend is the narrow surface we use from the Voyage SDK. Tests
@@ -121,42 +126,85 @@ func NewReranker(apiKey, model string) *Reranker {
 	}
 }
 
-// Rerank sends the query and documents to the Voyage AI rerank endpoint and
-// returns the top-K results sorted by relevance score in descending order.
-// Each RerankResult carries the original index of the document in the input
-// slice together with the relevance score.
+// Rerank sends the query and documents to Voyage's rerank endpoint and returns
+// the top-K results sorted by relevance score descending. Each RerankResult's
+// Index references the caller's original `documents` slice.
+//
+// When the total batch would exceed Voyage's 600k token limit (or the 1000
+// docs-per-call limit), the request is transparently split into sub-batches
+// dispatched in parallel; per-batch results are then merged by score. The
+// scoring is preserved because Voyage's reranker is a cross-encoder
+// (per-pair scoring, comparable across calls).
 func (r *Reranker) Rerank(ctx context.Context, query string, documents []string, topK int) ([]RerankResult, error) {
 	if len(documents) == 0 {
 		return nil, nil
 	}
 
-	var tk *int
-	if topK > 0 {
-		tk = &topK
+	queryTokens := pipeline.CountTokens(query)
+	docTokens := make([]int, len(documents))
+	for i, d := range documents {
+		docTokens[i] = pipeline.CountTokens(d)
 	}
 
-	resp, err := r.backend.Rerank(query, documents, r.model, &voyageai.RerankRequestOpts{
-		TopK: tk,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("voyage rerank: %w", err)
-	}
-
-	results := make([]RerankResult, len(resp.Data))
-	for i, obj := range resp.Data {
-		results[i] = RerankResult{
-			Index: obj.Index,
-			Score: float64(obj.RelevanceScore),
+	groups := splitIntoBatches(queryTokens, docTokens, maxBatchTokens, maxDocsPerCall)
+	if len(groups) > 1 {
+		total := 0
+		for _, d := range docTokens {
+			total += d
 		}
+		log.Printf("voyage rerank: split %d candidates into %d sub-batches (query=%d tokens, total docs=%d tokens)",
+			len(documents), len(groups), queryTokens, total)
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
+	// Per-batch topK: ask Voyage for all results so we have everything to
+	// merge across batches; we trim globally after merge.
+	var (
+		mu  sync.Mutex
+		all []RerankResult
+	)
+
+	g, gctx := errgroup.WithContext(ctx)
+	for _, group := range groups {
+		group := group // capture
+		g.Go(func() error {
+			subDocs := make([]string, len(group))
+			for i, idx := range group {
+				subDocs[i] = documents[idx]
+			}
+			resp, err := r.backend.Rerank(query, subDocs, r.model, &voyageai.RerankRequestOpts{})
+			if err != nil {
+				return fmt.Errorf("voyage rerank: %w", err)
+			}
+			// Re-check the context after a possibly-slow call.
+			if err := gctx.Err(); err != nil {
+				return err
+			}
+			local := make([]RerankResult, len(resp.Data))
+			for i, obj := range resp.Data {
+				// obj.Index is local to subDocs; map back to global.
+				if obj.Index < 0 || obj.Index >= len(group) {
+					return fmt.Errorf("voyage rerank: backend returned out-of-range index %d (sub-batch size %d)", obj.Index, len(group))
+				}
+				local[i] = RerankResult{
+					Index: group[obj.Index],
+					Score: float64(obj.RelevanceScore),
+				}
+			}
+			mu.Lock()
+			all = append(all, local...)
+			mu.Unlock()
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].Score > all[j].Score
 	})
-
-	if topK > 0 && len(results) > topK {
-		results = results[:topK]
+	if topK > 0 && len(all) > topK {
+		all = all[:topK]
 	}
-
-	return results, nil
+	return all, nil
 }
