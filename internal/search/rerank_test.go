@@ -108,3 +108,115 @@ func TestRerankIntegration(t *testing.T) {
 	t.Logf("top result: index=%d score=%.4f", results[0].Index, results[0].Score)
 	t.Logf("second result: index=%d score=%.4f", results[1].Index, results[1].Score)
 }
+
+func TestSplitIntoBatches_UnderBudget(t *testing.T) {
+	// 1-token query, 10 docs of 100 tokens each.
+	// cost = 1*10 + 10*100 = 1010 tokens, well under 550k.
+	docTokens := make([]int, 10)
+	for i := range docTokens {
+		docTokens[i] = 100
+	}
+	groups := splitIntoBatches(1, docTokens, 550_000, 1000)
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 batch, got %d", len(groups))
+	}
+	if len(groups[0]) != 10 {
+		t.Fatalf("expected 10 docs in batch, got %d", len(groups[0]))
+	}
+	for i, idx := range groups[0] {
+		if idx != i {
+			t.Fatalf("expected index %d at position %d, got %d", i, i, idx)
+		}
+	}
+}
+
+func TestSplitIntoBatches_OverBudget(t *testing.T) {
+	// 1-token query, 1000 docs of 1500 tokens each.
+	// per-doc cost (clamped at 16000-1=15999, no clamp triggers) = 1500
+	// per-batch cost: 1*N + N*1500 = 1501*N
+	// budget 550_000 ⇒ N ≤ 366 per batch
+	docTokens := make([]int, 1000)
+	for i := range docTokens {
+		docTokens[i] = 1500
+	}
+	groups := splitIntoBatches(1, docTokens, 550_000, 1000)
+	if len(groups) < 2 {
+		t.Fatalf("expected at least 2 batches, got %d", len(groups))
+	}
+	// All indices accounted for, in order, no duplicates.
+	seen := 0
+	for _, g := range groups {
+		for _, idx := range g {
+			if idx != seen {
+				t.Fatalf("expected index %d, got %d", seen, idx)
+			}
+			seen++
+		}
+	}
+	if seen != 1000 {
+		t.Fatalf("expected 1000 indices total, got %d", seen)
+	}
+	// Each batch respects the budget.
+	for bi, g := range groups {
+		cost := 1 * len(g)
+		for _, idx := range g {
+			cost += docTokens[idx]
+		}
+		if cost > 550_000 {
+			t.Fatalf("batch %d cost %d exceeds budget", bi, cost)
+		}
+	}
+}
+
+func TestSplitIntoBatches_GiantDocGetsOwnBatch(t *testing.T) {
+	// One enormous doc (clamps to 16k-10=15990) among small docs.
+	// With query=10, clamped per-doc = min(d, 16000-10=15990)
+	// doc[2] clamps to 15990. Use a tiny budget (16k) to force per-doc isolation.
+	// per-batch cost formula: 10*N + sum(clamped).
+	// doc[2] alone: 10*1 + 15990 = 16000 ≤ 16000 — fits as singleton.
+	// Adding any other doc would push over. So expect doc[2] alone.
+	docTokens := []int{50, 50, 100_000, 50, 50}
+	groups := splitIntoBatches(10, docTokens, 16_000, 1000)
+	foundGiantAlone := false
+	for _, g := range groups {
+		if len(g) == 1 && g[0] == 2 {
+			foundGiantAlone = true
+		}
+	}
+	if !foundGiantAlone {
+		t.Fatalf("expected doc[2] to land in its own batch; groups=%v", groups)
+	}
+	// All indices present in order.
+	seen := 0
+	for _, g := range groups {
+		for _, idx := range g {
+			if idx != seen {
+				t.Fatalf("expected index %d, got %d", seen, idx)
+			}
+			seen++
+		}
+	}
+}
+
+func TestSplitIntoBatches_MaxDocsPerCall(t *testing.T) {
+	// Tiny docs but lots of them — should hit the max-docs cap, not the
+	// token budget.
+	docTokens := make([]int, 2500)
+	for i := range docTokens {
+		docTokens[i] = 1
+	}
+	groups := splitIntoBatches(1, docTokens, 550_000, 1000)
+	if len(groups) != 3 {
+		t.Fatalf("expected 3 batches (1000+1000+500), got %d", len(groups))
+	}
+	if len(groups[0]) != 1000 || len(groups[1]) != 1000 || len(groups[2]) != 500 {
+		t.Fatalf("unexpected batch sizes: %d, %d, %d", len(groups[0]), len(groups[1]), len(groups[2]))
+	}
+}
+
+func TestSplitIntoBatches_Empty(t *testing.T) {
+	groups := splitIntoBatches(1, nil, 550_000, 1000)
+	if len(groups) != 0 {
+		t.Fatalf("expected 0 batches for empty input, got %d", len(groups))
+	}
+}

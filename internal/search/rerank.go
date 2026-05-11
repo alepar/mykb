@@ -23,6 +23,78 @@ func (v *voyageBackend) Rerank(query string, documents []string, model string, o
 	return v.client.Rerank(query, documents, model, opts)
 }
 
+// Voyage rerank-2 limits (also valid for rerank-2.5/-lite variants per docs).
+const (
+	// maxBatchTokens is our safe ceiling under Voyage's 600k batch limit.
+	// 8% headroom covers tokenizer-mismatch drift between our cl100k_base
+	// estimate and Voyage's Qwen2 tokenizer.
+	maxBatchTokens = 550_000
+
+	// maxDocsPerCall is Voyage's hard limit on documents per rerank call.
+	maxDocsPerCall = 1000
+
+	// maxPairTokens is Voyage's per-pair (query + single doc) cap for
+	// rerank-2 when truncation=true. We clamp per-doc contributions to
+	// this when computing the batch budget, matching Voyage's server-side
+	// truncation.
+	maxPairTokens = 16_000
+)
+
+// splitIntoBatches greedily packs docs (referenced by index) into sub-batches
+// whose total Voyage cost stays ≤ maxTokens and whose size stays ≤ maxDocs.
+//
+// Voyage's batch cost formula is:
+//
+//	query_tokens * N + sum(clamped_doc_tokens_i)
+//
+// where clamped_doc_tokens_i = min(doc_tokens_i, maxPairTokens - query_tokens).
+// The clamp reflects Voyage's server-side per-pair truncation.
+//
+// Order is preserved: each returned slice contains a contiguous run of input
+// indices. A document whose clamped cost alone exceeds maxTokens still gets a
+// singleton batch (Voyage will truncate it server-side).
+func splitIntoBatches(queryTokens int, docTokens []int, maxTokens, maxDocs int) [][]int {
+	if len(docTokens) == 0 {
+		return nil
+	}
+
+	perDocCap := maxPairTokens - queryTokens
+	if perDocCap < 0 {
+		perDocCap = 0
+	}
+
+	clamp := func(d int) int {
+		if d > perDocCap {
+			return perDocCap
+		}
+		return d
+	}
+
+	var groups [][]int
+	var current []int
+	currentCost := 0
+
+	flush := func() {
+		if len(current) > 0 {
+			groups = append(groups, current)
+			current = nil
+			currentCost = 0
+		}
+	}
+
+	for i, d := range docTokens {
+		add := queryTokens + clamp(d)
+		// If adding this doc would overflow, flush first.
+		if len(current) > 0 && (currentCost+add > maxTokens || len(current) >= maxDocs) {
+			flush()
+		}
+		current = append(current, i)
+		currentCost += add
+	}
+	flush()
+	return groups
+}
+
 // Reranker re-scores documents against a query using the Voyage AI rerank API.
 type Reranker struct {
 	backend rerankBackend
